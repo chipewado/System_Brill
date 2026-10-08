@@ -1,0 +1,9 @@
+C:\Users\phamt\System_Brill\Assistant.Core\bin\Debug\netstandard2.1\Assistant.Core.deps.json
+C:\Users\phamt\System_Brill\Assistant.Core\bin\Debug\netstandard2.1\Assistant.Core.dll
+C:\Users\phamt\System_Brill\Assistant.Core\bin\Debug\netstandard2.1\Assistant.Core.pdb
+C:\Users\phamt\System_Brill\Assistant.Core\obj\Debug\netstandard2.1\Assistant.Core.GeneratedMSBuildEditorConfig.editorconfig
+C:\Users\phamt\System_Brill\Assistant.Core\obj\Debug\netstandard2.1\Assistant.Core.AssemblyInfoInputs.cache
+C:\Users\phamt\System_Brill\Assistant.Core\obj\Debug\netstandard2.1\Assistant.Core.AssemblyInfo.cs
+C:\Users\phamt\System_Brill\Assistant.Core\obj\Debug\netstandard2.1\Assistant.Core.csproj.CoreCompileInputs.cache
+C:\Users\phamt\System_Brill\Assistant.Core\obj\Debug\netstandard2.1\Assistant.Core.dll
+C:\Users\phamt\System_Brill\Assistant.Core\obj\Debug\netstandard2.1\Assistant.Core.pdb

@@ -1,0 +1,13 @@
+C:\Users\phamt\System_Brill\Assistant.Sim\bin\Debug\netstandard2.1\Assistant.Sim.deps.json
+C:\Users\phamt\System_Brill\Assistant.Sim\bin\Debug\netstandard2.1\Assistant.Sim.dll
+C:\Users\phamt\System_Brill\Assistant.Sim\bin\Debug\netstandard2.1\Assistant.Sim.pdb
+C:\Users\phamt\System_Brill\Assistant.Sim\bin\Debug\netstandard2.1\Assistant.Core.dll
+C:\Users\phamt\System_Brill\Assistant.Sim\bin\Debug\netstandard2.1\Assistant.Core.pdb
+C:\Users\phamt\System_Brill\Assistant.Sim\obj\Debug\netstandard2.1\Assistant.Sim.csproj.AssemblyReference.cache
+C:\Users\phamt\System_Brill\Assistant.Sim\obj\Debug\netstandard2.1\Assistant.Sim.GeneratedMSBuildEditorConfig.editorconfig
+C:\Users\phamt\System_Brill\Assistant.Sim\obj\Debug\netstandard2.1\Assistant.Sim.AssemblyInfoInputs.cache
+C:\Users\phamt\System_Brill\Assistant.Sim\obj\Debug\netstandard2.1\Assistant.Sim.AssemblyInfo.cs
+C:\Users\phamt\System_Brill\Assistant.Sim\obj\Debug\netstandard2.1\Assistant.Sim.csproj.CoreCompileInputs.cache
+C:\Users\phamt\System_Brill\Assistant.Sim\obj\Debug\netstandard2.1\Assistan.3FBC8113.Up2Date
+C:\Users\phamt\System_Brill\Assistant.Sim\obj\Debug\netstandard2.1\Assistant.Sim.dll
+C:\Users\phamt\System_Brill\Assistant.Sim\obj\Debug\netstandard2.1\Assistant.Sim.pdb

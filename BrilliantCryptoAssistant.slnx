@@ -1,0 +1,6 @@
+<Solution>
+  <Project Path="Assistant.Core/Assistant.Core.csproj" />
+  <Project Path="Assistant.Runner/Assistant.Runner.csproj" />
+  <Project Path="Assistant.Sim/Assistant.Sim.csproj" />
+  <Project Path="Assistant.Tests/Assistant.Tests.csproj" />
+</Solution>
