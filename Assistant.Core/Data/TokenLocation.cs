@@ -9,8 +9,8 @@ namespace Assistant.Core.Data
         public TokenRarity Rarity { get; set; }
         public float EstimatedValue { get; set; }
         public bool IsCollected { get; set; }
-        public DateTime DetectedAt { get; set; } = DateTime.UtcNow;
-        public DateTime LastConfirmedAt { get; set; } = DateTime.UtcNow;
+        public DateTimeOffset DetectedAt { get; set; }
+        public DateTimeOffset LastConfirmedAt { get; set; }
 
         public TokenLocation Clone()
         {

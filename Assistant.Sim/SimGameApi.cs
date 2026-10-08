@@ -11,6 +11,7 @@ namespace Assistant.Sim
         private readonly SimGridMap _map;
         private readonly SimPlayer _player;
         private readonly SimTokenSpawner _spawner;
+        private readonly IClock _clock;
         private readonly Random _rng;
         private readonly Dictionary<string, TokenLocation> _activeTokens = new Dictionary<string, TokenLocation>();
         private readonly object _lock = new object();
@@ -23,13 +24,15 @@ namespace Assistant.Sim
         public SimGridMap Map => _map;
         public SimPlayer Player => _player;
         public SimTokenSpawner Spawner => _spawner;
+        public IClock Clock => _clock;
 
-        public SimGameApi(SimGridMap? map = null, SimPlayer? player = null, int seed = 42)
+        public SimGameApi(SimGridMap? map = null, SimPlayer? player = null, int seed = 42, IClock? clock = null)
         {
+            _clock = clock ?? SystemClock.Instance;
             _rng = new Random(seed);
             _map = map ?? new SimGridMap(100, 100, 10f);
             _player = player ?? new SimPlayer(new Vec3(50f, 0, 50f), 5f);
-            _spawner = new SimTokenSpawner();
+            _spawner = new SimTokenSpawner(_clock);
         }
 
         #region IGameApi Implementation

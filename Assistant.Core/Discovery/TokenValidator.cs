@@ -1,4 +1,5 @@
 using System;
+using Assistant.Core.Abstractions;
 using Assistant.Core.Data;
 
 namespace Assistant.Core.Discovery
@@ -36,14 +37,20 @@ namespace Assistant.Core.Discovery
 
     public class TokenValidator
     {
+        private readonly IClock _clock;
         public float DefaultTtlSeconds { get; set; } = 30f;
 
-        public TokenValidator(float defaultTtlSeconds = 30f)
+        public TokenValidator(IClock? clock = null, float defaultTtlSeconds = 30f)
         {
+            _clock = clock ?? SystemClock.Instance;
             DefaultTtlSeconds = defaultTtlSeconds;
         }
 
-        public TokenValidationResult Validate(TokenLocation? token, MapData? map, DateTime? currentTime = null, float? ttlSeconds = null)
+        public TokenValidator(float defaultTtlSeconds) : this(SystemClock.Instance, defaultTtlSeconds)
+        {
+        }
+
+        public TokenValidationResult Validate(TokenLocation? token, MapData? map, DateTimeOffset? currentTime = null, float? ttlSeconds = null)
         {
             if (token == null)
             {
@@ -81,7 +88,7 @@ namespace Assistant.Core.Discovery
             float maxTtl = ttlSeconds ?? DefaultTtlSeconds;
             if (maxTtl > 0)
             {
-                var now = currentTime ?? DateTime.UtcNow;
+                var now = currentTime ?? _clock.UtcNow;
                 var age = (now - token.LastConfirmedAt).TotalSeconds;
                 if (age > maxTtl)
                 {
@@ -92,9 +99,19 @@ namespace Assistant.Core.Discovery
             return TokenValidationResult.Success();
         }
 
-        public bool IsValid(TokenLocation? token, MapData? map, DateTime? currentTime = null, float? ttlSeconds = null)
+        public TokenValidationResult Validate(TokenLocation? token, MapData? map, DateTime? currentTime, float? ttlSeconds = null)
+        {
+            return Validate(token, map, (DateTimeOffset?)currentTime, ttlSeconds);
+        }
+
+        public bool IsValid(TokenLocation? token, MapData? map, DateTimeOffset? currentTime = null, float? ttlSeconds = null)
         {
             return Validate(token, map, currentTime, ttlSeconds).IsValid;
+        }
+
+        public bool IsValid(TokenLocation? token, MapData? map, DateTime? currentTime, float? ttlSeconds = null)
+        {
+            return Validate(token, map, (DateTimeOffset?)currentTime, ttlSeconds).IsValid;
         }
     }
 }

@@ -1,15 +1,23 @@
 using System;
 using System.Collections.Generic;
+using Assistant.Core.Abstractions;
 using Assistant.Core.Data;
 
 namespace Assistant.Sim
 {
     public class SimTokenSpawner
     {
+        private readonly IClock _clock;
         private int _counter = 0;
+
+        public SimTokenSpawner(IClock? clock = null)
+        {
+            _clock = clock ?? SystemClock.Instance;
+        }
 
         public TokenLocation CreatePresetToken(string id, Vec3 position, TokenRarity rarity, float estimatedValue)
         {
+            var now = _clock.UtcNow;
             return new TokenLocation
             {
                 Id = id,
@@ -17,8 +25,8 @@ namespace Assistant.Sim
                 Rarity = rarity,
                 EstimatedValue = estimatedValue,
                 IsCollected = false,
-                DetectedAt = DateTime.UtcNow,
-                LastConfirmedAt = DateTime.UtcNow
+                DetectedAt = now,
+                LastConfirmedAt = now
             };
         }
 
@@ -40,20 +48,44 @@ namespace Assistant.Sim
             TokenRarity rarity = forcedRarity ?? RollRarity(rng);
             float value = RollValue(rarity, rng);
 
-            // Find a walkable position on the map
+            // Find a walkable, non-obstacle position on the map
             Vec3 pos = Vec3.Zero;
-            for (int attempts = 0; attempts < 50; attempts++)
+            bool foundWalkable = false;
+            float minX = map.WorldBounds.Min.X;
+            float maxX = map.WorldBounds.Max.X;
+            float minZ = map.WorldBounds.Min.Z;
+            float maxZ = map.WorldBounds.Max.Z;
+
+            for (int attempts = 0; attempts < 100; attempts++)
             {
-                float x = (float)(rng.NextDouble() * map.WorldBounds.Max.X);
-                float z = (float)(rng.NextDouble() * map.WorldBounds.Max.Z);
+                float x = (float)(minX + rng.NextDouble() * (maxX - minX));
+                float z = (float)(minZ + rng.NextDouble() * (maxZ - minZ));
                 var candidate = new Vec3(x, 0, z);
                 if (map.IsWalkable(candidate))
                 {
                     pos = candidate;
+                    foundWalkable = true;
                     break;
                 }
             }
 
+            if (!foundWalkable)
+            {
+                // Deterministic fallback scan: pick the first walkable, non-obstacle cell
+                for (int gx = 0; gx < map.GridWidth && !foundWalkable; gx++)
+                {
+                    for (int gz = 0; gz < map.GridHeight && !foundWalkable; gz++)
+                    {
+                        if (map.GetCell(gx, gz).IsWalkable())
+                        {
+                            pos = map.GridToWorld(gx, gz);
+                            foundWalkable = true;
+                        }
+                    }
+                }
+            }
+
+            var now = _clock.UtcNow;
             return new TokenLocation
             {
                 Id = id,
@@ -61,8 +93,8 @@ namespace Assistant.Sim
                 Rarity = rarity,
                 EstimatedValue = value,
                 IsCollected = false,
-                DetectedAt = DateTime.UtcNow,
-                LastConfirmedAt = DateTime.UtcNow
+                DetectedAt = now,
+                LastConfirmedAt = now
             };
         }
 
