@@ -1,12 +1,12 @@
 using System;
 using System.Collections.Generic;
-using System.Linq;
 using Assistant.Core.Data;
 
 namespace Assistant.Core.Discovery
 {
     /// <summary>
-    /// 2D Spatial hash grid on the X-Z plane for fast spatial queries.
+    /// 2D Spatial hash grid on the X-Z plane for candidate spatial queries.
+    /// Note: This class is not thread-safe. Synchronization must be handled by caller (e.g. via repository lock).
     /// </summary>
     public class SpatialHashGrid
     {
@@ -23,20 +23,22 @@ namespace Assistant.Core.Discovery
         public float CellSize => _cellSize;
         public int Count => _idToCell.Count;
 
-        private (int cx, int cz) GetCell(Vec3 pos)
+        private int ToCellIndex(float v)
         {
-            int cx = (int)Math.Floor(pos.X / _cellSize);
-            int cz = (int)Math.Floor(pos.Z / _cellSize);
-            return (cx, cz);
+            double c = Math.Floor(v / (double)_cellSize);
+            if (c > 1_000_000_000) return 1_000_000_000;
+            if (c < -1_000_000_000) return -1_000_000_000;
+            return (int)c;
         }
 
-        public void Insert(string id, Vec3 pos)
+        private (int cx, int cz) GetCell(Vec3 pos) => (ToCellIndex(pos.X), ToCellIndex(pos.Z));
+
+        private static bool IsUsable(Vec3 p) => float.IsFinite(p.X) && float.IsFinite(p.Z);
+
+        public bool Insert(string id, Vec3 pos)
         {
-            if (string.IsNullOrEmpty(id)) return;
-
-            // Remove previous cell mapping if exists
+            if (string.IsNullOrEmpty(id) || !IsUsable(pos)) return false;
             Remove(id);
-
             var cell = GetCell(pos);
             if (!_cells.TryGetValue(cell, out var set))
             {
@@ -45,16 +47,13 @@ namespace Assistant.Core.Discovery
             }
             set.Add(id);
             _idToCell[id] = cell;
+            return true;
         }
 
-        public void Update(string id, Vec3 oldPos, Vec3 newPos)
+        public void Update(string id, Vec3 newPos)
         {
-            var oldCell = GetCell(oldPos);
-            var newCell = GetCell(newPos);
-            if (oldCell == newCell && _idToCell.ContainsKey(id))
-            {
-                return;
-            }
+            if (!IsUsable(newPos)) return;
+            if (_idToCell.TryGetValue(id, out var current) && current == GetCell(newPos)) return;
             Insert(id, newPos);
         }
 
@@ -83,13 +82,32 @@ namespace Assistant.Core.Discovery
             _idToCell.Clear();
         }
 
-        public HashSet<string> QueryRadius(Vec3 center, float radius)
+        public HashSet<string> QueryCandidates(Vec3 center, float radius)
         {
             var result = new HashSet<string>();
-            int minX = (int)Math.Floor((center.X - radius) / _cellSize);
-            int maxX = (int)Math.Floor((center.X + radius) / _cellSize);
-            int minZ = (int)Math.Floor((center.Z - radius) / _cellSize);
-            int maxZ = (int)Math.Floor((center.Z + radius) / _cellSize);
+            if (!IsUsable(center) || float.IsNaN(radius) || radius < 0) return result;
+            if (float.IsPositiveInfinity(radius))
+            {
+                result.UnionWith(_idToCell.Keys);
+                return result;
+            }
+
+            int minX = ToCellIndex(center.X - radius), maxX = ToCellIndex(center.X + radius);
+            int minZ = ToCellIndex(center.Z - radius), maxZ = ToCellIndex(center.Z + radius);
+            long span = ((long)maxX - minX + 1) * ((long)maxZ - minZ + 1);
+
+            if (span > _cells.Count) // Fewer real cells than candidate span -> iterate real cells
+            {
+                foreach (var kv in _cells)
+                {
+                    var (cx, cz) = kv.Key;
+                    if (cx >= minX && cx <= maxX && cz >= minZ && cz <= maxZ)
+                    {
+                        result.UnionWith(kv.Value);
+                    }
+                }
+                return result;
+            }
 
             for (int cx = minX; cx <= maxX; cx++)
             {
@@ -97,14 +115,14 @@ namespace Assistant.Core.Discovery
                 {
                     if (_cells.TryGetValue((cx, cz), out var set))
                     {
-                        foreach (var id in set)
-                        {
-                            result.Add(id);
-                        }
+                        result.UnionWith(set);
                     }
                 }
             }
             return result;
         }
+
+        [Obsolete("Use QueryCandidates instead.")]
+        public HashSet<string> QueryRadius(Vec3 center, float radius) => QueryCandidates(center, radius);
     }
 }

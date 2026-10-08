@@ -35,15 +35,16 @@ namespace Assistant.Core.Discovery
 
             lock (_lock)
             {
+                if (_tokens.ContainsKey(t.Id))
+                {
+                    throw new ArgumentException($"Token with ID '{t.Id}' already exists.", nameof(t));
+                }
+
                 var clone = t.Clone();
                 _tokens[t.Id] = clone;
                 if (!clone.IsCollected)
                 {
                     _grid.Insert(clone.Id, clone.Position);
-                }
-                else
-                {
-                    _grid.Remove(clone.Id);
                 }
             }
         }
@@ -55,11 +56,16 @@ namespace Assistant.Core.Discovery
 
             lock (_lock)
             {
+                if (!_tokens.ContainsKey(t.Id))
+                {
+                    throw new KeyNotFoundException($"Token with ID '{t.Id}' does not exist.");
+                }
+
                 var clone = t.Clone();
                 _tokens[t.Id] = clone;
                 if (!clone.IsCollected)
                 {
-                    _grid.Insert(clone.Id, clone.Position);
+                    _grid.Update(clone.Id, clone.Position);
                 }
                 else
                 {
@@ -131,63 +137,65 @@ namespace Assistant.Core.Discovery
 
             lock (_lock)
             {
-                // When token count is small, linear scan is fast and exact
-                if (_tokens.Count <= 200)
+                int availableCount = 0;
+                foreach (var t in _tokens.Values)
                 {
-                    return _tokens.Values
-                        .Where(t => !t.IsCollected)
-                        .OrderBy(t => Vec3.DistanceSquared(from, t.Position))
-                        .Take(count)
-                        .Select(t => t.Clone())
-                        .ToList();
+                    if (!t.IsCollected) availableCount++;
                 }
 
-                // For larger datasets, expand radius queries via SpatialHashGrid
+                if (availableCount == 0) return Array.Empty<TokenLocation>();
+                int targetCount = Math.Min(count, availableCount);
+
                 float searchRadius = _grid.CellSize;
-                const float maxRadius = 5000f;
-                HashSet<string> candidateIds = new HashSet<string>();
+                var candidateIds = new HashSet<string>();
 
-                while (searchRadius <= maxRadius)
+                while (true)
                 {
-                    var ids = _grid.QueryRadius(from, searchRadius);
-                    foreach (var id in ids)
-                    {
-                        candidateIds.Add(id);
-                    }
+                    var ids = _grid.QueryCandidates(from, searchRadius);
+                    candidateIds.UnionWith(ids);
 
-                    if (candidateIds.Count >= count * 2 || searchRadius >= maxRadius)
-                    {
-                        break;
-                    }
-                    searchRadius *= 2f;
-                }
-
-                // If grid query found enough candidates, rank them
-                if (candidateIds.Count > 0)
-                {
-                    var result = new List<TokenLocation>();
+                    var candidates = new List<(TokenLocation token, float distSq)>();
                     foreach (var id in candidateIds)
                     {
                         if (_tokens.TryGetValue(id, out var t) && !t.IsCollected)
                         {
-                            result.Add(t);
+                            float distSq = Vec3.DistanceSquared(from, t.Position);
+                            candidates.Add((t, distSq));
                         }
                     }
 
-                    return result
-                        .OrderBy(t => Vec3.DistanceSquared(from, t.Position))
-                        .Take(count)
-                        .Select(t => t.Clone())
-                        .ToList();
-                }
+                    if (candidates.Count >= targetCount)
+                    {
+                        candidates.Sort((a, b) => a.distSq.CompareTo(b.distSq));
+                        float kthDist = (float)Math.Sqrt(candidates[targetCount - 1].distSq);
+                        if (searchRadius >= kthDist || candidates.Count == availableCount)
+                        {
+                            var result = new List<TokenLocation>(targetCount);
+                            for (int i = 0; i < targetCount; i++)
+                            {
+                                result.Add(candidates[i].token.Clone());
+                            }
+                            return result;
+                        }
 
-                // Fallback to all available tokens
-                return _tokens.Values
-                    .Where(t => !t.IsCollected)
-                    .OrderBy(t => Vec3.DistanceSquared(from, t.Position))
-                    .Take(count)
-                    .Select(t => t.Clone())
-                    .ToList();
+                        searchRadius = Math.Max(searchRadius * 2f, kthDist);
+                    }
+                    else
+                    {
+                        if (candidates.Count == availableCount)
+                        {
+                            candidates.Sort((a, b) => a.distSq.CompareTo(b.distSq));
+                            var result = new List<TokenLocation>(candidates.Count);
+                            for (int i = 0; i < candidates.Count; i++)
+                            {
+                                result.Add(candidates[i].token.Clone());
+                            }
+                            return result;
+                        }
+
+                        searchRadius *= 2f;
+                    }
+                }
             }
         }
 
