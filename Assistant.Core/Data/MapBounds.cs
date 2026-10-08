@@ -2,8 +2,8 @@ namespace Assistant.Core.Data
 {
     public class MapBounds
     {
-        public Vec3 Min { get; set; }
-        public Vec3 Max { get; set; }
+        public Vec3 Min { get; }
+        public Vec3 Max { get; }
 
         public MapBounds()
         {

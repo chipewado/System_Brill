@@ -33,51 +33,69 @@ namespace Assistant.Sim
             return new MapData(mapId, WorldBounds);
         }
 
-        public (int gx, int gz) WorldToGrid(Vec3 pos)
+        public GridPosition WorldToGrid(Vec3 pos)
         {
             int gx = (int)Math.Floor(pos.X / CellSize);
             int gz = (int)Math.Floor(pos.Z / CellSize);
-            return (gx, gz);
+            return new GridPosition(gx, gz);
         }
 
-        public Vec3 GridToWorld(int gx, int gz)
+        public Vec3 GridToWorld(GridPosition gridPos)
         {
             return new Vec3(
-                (gx + 0.5f) * CellSize,
+                (gridPos.X + 0.5f) * CellSize,
                 0,
-                (gz + 0.5f) * CellSize
+                (gridPos.Z + 0.5f) * CellSize
             );
         }
 
-        public bool IsInBounds(int gx, int gz)
+        public Vec3 GridToWorld(int gx, int gz) => GridToWorld(new GridPosition(gx, gz));
+
+        public bool IsInBounds(GridPosition gridPos)
         {
-            return gx >= 0 && gx < GridWidth && gz >= 0 && gz < GridHeight;
+            return gridPos.X >= 0 && gridPos.X < GridWidth && gridPos.Z >= 0 && gridPos.Z < GridHeight;
         }
 
-        public SimCellType GetCell(int gx, int gz)
+        public bool IsInBounds(int gx, int gz) => IsInBounds(new GridPosition(gx, gz));
+
+        public SimCellType GetCell(GridPosition gridPos)
         {
-            if (!IsInBounds(gx, gz)) return SimCellType.Obstacle;
-            return _cells[gx, gz];
+            if (!IsInBounds(gridPos)) return SimCellType.Obstacle;
+            return _cells[gridPos.X, gridPos.Z];
         }
 
-        public void SetCell(int gx, int gz, SimCellType cellType)
+        public SimCellType GetCell(int gx, int gz) => GetCell(new GridPosition(gx, gz));
+
+        public void SetCell(GridPosition gridPos, SimCellType cellType)
         {
-            if (IsInBounds(gx, gz))
+            if (IsInBounds(gridPos))
             {
-                _cells[gx, gz] = cellType;
+                _cells[gridPos.X, gridPos.Z] = cellType;
             }
+        }
+
+        public void SetCell(int gx, int gz, SimCellType cellType) => SetCell(new GridPosition(gx, gz), cellType);
+
+        public bool IsWalkable(GridPosition gridPos)
+        {
+            return GetCell(gridPos).IsWalkable();
         }
 
         public bool IsWalkable(Vec3 pos)
         {
-            var (gx, gz) = WorldToGrid(pos);
-            return GetCell(gx, gz).IsWalkable();
+            var gridPos = WorldToGrid(pos);
+            return IsWalkable(gridPos);
+        }
+
+        public float GetTraversalCost(GridPosition gridPos)
+        {
+            return GetCell(gridPos).GetTraversalCost();
         }
 
         public float GetTraversalCost(Vec3 pos)
         {
-            var (gx, gz) = WorldToGrid(pos);
-            return GetCell(gx, gz).GetTraversalCost();
+            var gridPos = WorldToGrid(pos);
+            return GetTraversalCost(gridPos);
         }
 
         /// <summary>
