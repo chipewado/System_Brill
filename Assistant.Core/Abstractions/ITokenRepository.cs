@@ -12,6 +12,8 @@ namespace Assistant.Core.Abstractions
         IReadOnlyList<TokenLocation> GetAvailable();
         IReadOnlyList<TokenLocation> GetByRarity(TokenRarity r);
         IReadOnlyList<TokenLocation> GetNearest(Vec3 from, int count);
+        IReadOnlyList<TokenLocation> GetInRegion(Region region);
         void ClearCollected();
+        void Clear();
     }
 }

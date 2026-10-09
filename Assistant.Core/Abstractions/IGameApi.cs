@@ -9,6 +9,6 @@ namespace Assistant.Core.Abstractions
         event Action<TokenLocation>? TokenSpawned;
         event Action<string>? TokenCollected;
         event Action<string>? TokenRemoved;
-        event Action? MapChanged;
+        event Action<MapChangedEventArgs>? MapChanged;
     }
 }

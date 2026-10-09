@@ -136,12 +136,14 @@ namespace Assistant.Tests
         [Test]
         public void SimGameApi_MapChanged_FiresEvent()
         {
-            bool mapChangedFired = false;
-            _api.MapChanged += () => mapChangedFired = true;
+            MapChangedEventArgs? receivedArgs = null;
+            _api.MapChanged += args => receivedArgs = args;
 
-            _api.TriggerMapChanged();
+            _api.TriggerMapChanged(null, "Test Reason");
 
-            Assert.That(mapChangedFired, Is.True);
+            Assert.That(receivedArgs, Is.Not.Null);
+            Assert.That(receivedArgs!.Reason, Is.EqualTo("Test Reason"));
+            Assert.That(receivedArgs.AffectedRegion, Is.Null);
         }
 
         [Test]

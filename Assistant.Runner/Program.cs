@@ -59,7 +59,7 @@ namespace Assistant.Runner
             };
 
             gameApi.TokenRemoved += id => repo.Remove(id);
-            gameApi.MapChanged += () => Console.WriteLine("    [Event] Map structure changed!");
+            gameApi.MapChanged += args => Console.WriteLine($"    [Event] Map structure changed! ({args.Reason})");
 
             // 4. Spawn Specification Preset Tokens (Section 21)
             Console.WriteLine("\n[3] Spawning Phase 1 Presets from Spec:");

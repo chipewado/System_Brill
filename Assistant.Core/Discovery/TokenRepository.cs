@@ -215,5 +215,33 @@ namespace Assistant.Core.Discovery
                 }
             }
         }
+
+        public IReadOnlyList<TokenLocation> GetInRegion(Region region)
+        {
+            if (region == null) throw new ArgumentNullException(nameof(region));
+
+            lock (_lock)
+            {
+                var candidateIds = _grid.QueryCandidates(region.Center, region.Radius);
+                var result = new List<TokenLocation>();
+                foreach (var id in candidateIds)
+                {
+                    if (_tokens.TryGetValue(id, out var token) && !token.IsCollected && region.Contains(token.Position))
+                    {
+                        result.Add(token.Clone());
+                    }
+                }
+                return result;
+            }
+        }
+
+        public void Clear()
+        {
+            lock (_lock)
+            {
+                _tokens.Clear();
+                _grid.Clear();
+            }
+        }
     }
 }

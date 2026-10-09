@@ -19,7 +19,7 @@ namespace Assistant.Sim
         public event Action<TokenLocation>? TokenSpawned;
         public event Action<string>? TokenCollected;
         public event Action<string>? TokenRemoved;
-        public event Action? MapChanged;
+        public event Action<MapChangedEventArgs>? MapChanged;
 
         public SimGridMap Map => _map;
         public SimPlayer Player => _player;
@@ -151,9 +151,9 @@ namespace Assistant.Sim
             return false;
         }
 
-        public void TriggerMapChanged()
+        public void TriggerMapChanged(Region? affectedRegion = null, string reason = "Map layout changed")
         {
-            MapChanged?.Invoke();
+            MapChanged?.Invoke(new MapChangedEventArgs(affectedRegion, reason, _clock.UtcNow));
         }
 
         public IReadOnlyList<TokenLocation> GetActiveTokens()

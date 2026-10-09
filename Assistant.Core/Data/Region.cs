@@ -18,6 +18,12 @@ namespace Assistant.Core.Data
             return Vec3.Distance2D(Center, point) <= Radius;
         }
 
+        public bool Intersects(Region other)
+        {
+            if (other == null) return false;
+            return Vec3.Distance2D(Center, other.Center) <= (Radius + other.Radius);
+        }
+
         public override string ToString() => $"Region[Center={Center}, Radius={Radius:F1}]";
     }
 }
