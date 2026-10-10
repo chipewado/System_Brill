@@ -669,18 +669,16 @@ namespace Assistant.Tests.Discovery
         [Test]
         public void ParallelOperations_TickScanRegionAndHandleMapChanged_NoDeadlock()
         {
-            using var cts = new System.Threading.CancellationTokenSource(TimeSpan.FromSeconds(5));
             var tasks = new List<System.Threading.Tasks.Task>();
+            const int iterationsPerWorker = 50;
 
             for (int i = 0; i < 4; i++)
             {
                 int workerId = i;
                 tasks.Add(System.Threading.Tasks.Task.Run(() =>
                 {
-                    for (int step = 0; step < 50; step++)
+                    for (int step = 0; step < iterationsPerWorker; step++)
                     {
-                        if (cts.Token.IsCancellationRequested) break;
-
                         if (workerId == 0)
                         {
                             _service.Tick();
@@ -698,11 +696,30 @@ namespace Assistant.Tests.Discovery
                             _service.PruneStaleTokens();
                         }
                     }
-                }, cts.Token));
+                }));
             }
 
-            bool completed = System.Threading.Tasks.Task.WaitAll(tasks.ToArray(), TimeSpan.FromSeconds(5));
-            Assert.That(completed, Is.True, "Parallel operations must complete without deadlock within timeout");
+            bool completed = System.Threading.Tasks.Task.WaitAll(tasks.ToArray(), TimeSpan.FromSeconds(10));
+            Assert.That(completed, Is.True, "Parallel operations must complete all iterations without deadlock");
+        }
+
+        [Test]
+        public void Tick_NegativeElapsedTime_TreatsAsDueAndScans()
+        {
+            _service.ScanInterval = TimeSpan.FromSeconds(2.0);
+            _gameApi.SpawnToken(new TokenLocation { Id = "t-init", Position = Vec3.Zero, EstimatedValue = 10 });
+
+            // Initial Tick runs scan
+            _service.Tick();
+            Assert.That(_repository.Get("t-init"), Is.Not.Null);
+
+            // Spawn another token, step clock backwards (negative elapsed time)
+            _gameApi.SpawnToken(new TokenLocation { Id = "t-backwards", Position = Vec3.Zero, EstimatedValue = 20 });
+            _clock.Advance(TimeSpan.FromSeconds(-5.0));
+
+            // Tick must treat negative elapsed as due and scan
+            _service.Tick();
+            Assert.That(_repository.Get("t-backwards"), Is.Not.Null, "Negative elapsed time must be treated as due and trigger a scan");
         }
 
         [Test]

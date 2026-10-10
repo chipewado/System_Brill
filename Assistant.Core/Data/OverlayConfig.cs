@@ -20,5 +20,20 @@ namespace Assistant.Core.Data
         /// WorldUnitsPerPixel = BaseWorldUnitsPerPixel / MinimapZoom.
         /// </summary>
         public float MinimapZoom { get; set; } = 1.0f;
+
+        /// <summary>
+        /// Creates a MinimapViewport using this config's MinimapZoom.
+        /// </summary>
+        public MinimapViewport CreateViewport(
+            Vec2 centerWorld,
+            float headingDegrees = 0f,
+            float baseWorldUnitsPerPixel = 0.5f,
+            float widthPx = 200f,
+            float heightPx = 200f,
+            float edgePaddingPx = 4f,
+            bool rotateWithPlayer = true)
+        {
+            return MinimapViewport.CreateFromConfig(this, centerWorld, headingDegrees, baseWorldUnitsPerPixel, widthPx, heightPx, edgePaddingPx, rotateWithPlayer);
+        }
     }
 }

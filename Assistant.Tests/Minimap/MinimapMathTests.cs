@@ -66,7 +66,7 @@ namespace Assistant.Tests.Minimap
         }
 
         [Test]
-        public void WorldToMinimap_RotationActive_RotatesCoordinatesClockwiseByHeading()
+        public void WorldToMinimap_RotationActive_RotatesCoordinatesCounterClockwiseByHeading()
         {
             _defaultViewport.HeadingDegrees = 45f;
             _defaultViewport.RotateWithPlayer = true;
@@ -386,6 +386,84 @@ namespace Assistant.Tests.Minimap
             Assert.That(Math.Abs(result.ScreenPositionPx.X), Is.LessThanOrEqualTo(96.001f));
             Assert.That(Math.Abs(result.ScreenPositionPx.Y), Is.LessThanOrEqualTo(96.001f));
             Assert.That(result.DirectionAngleDegrees, Is.EqualTo(45f).Within(0.01f));
+        }
+
+        [Test]
+        public void WorldToMinimap_ZeroAllocations_Over50kCalls()
+        {
+            var target = new Vec3(123.456f, 0f, 789.012f);
+            // Warm-up JIT
+            for (int i = 0; i < 1_000; i++)
+            {
+                _ = MinimapMath.WorldToMinimap(target, _defaultViewport);
+            }
+
+            long before = GC.GetAllocatedBytesForCurrentThread();
+            for (int i = 0; i < 50_000; i++)
+            {
+                _ = MinimapMath.WorldToMinimap(target, _defaultViewport);
+            }
+            long after = GC.GetAllocatedBytesForCurrentThread();
+
+            Assert.That(after - before, Is.EqualTo(0L), "WorldToMinimap must not allocate any heap memory over 50k calls.");
+        }
+
+        [Test]
+        public void ViewportFactory_FromOverlayConfig_DerivesWorldUnitsPerPixelCorrectly()
+        {
+            var config = new OverlayConfig
+            {
+                MinimapZoom = 2.0f
+            };
+
+            var viewport = MinimapViewport.CreateFromConfig(
+                config,
+                centerWorld: new Vec2(100f, 200f),
+                headingDegrees: 90f,
+                baseWorldUnitsPerPixel: 1.0f);
+
+            Assert.That(viewport.WorldUnitsPerPixel, Is.EqualTo(0.5f).Within(0.0001f)); // 1.0 / 2.0 = 0.5
+            Assert.That(viewport.CenterWorld.X, Is.EqualTo(100f));
+            Assert.That(viewport.CenterWorld.Y, Is.EqualTo(200f));
+            Assert.That(viewport.HeadingDegrees, Is.EqualTo(90f));
+            Assert.That(viewport.IsValid, Is.True);
+
+            // Also test extension/method directly on config
+            var fromOverlay = config.CreateViewport(new Vec2(10f, 20f), 0f, 2.0f);
+            Assert.That(fromOverlay.WorldUnitsPerPixel, Is.EqualTo(1.0f).Within(0.0001f)); // 2.0 / 2.0 = 1.0
+        }
+
+        [Test]
+        public void MinimapViewport_IsValid_DetectsValidAndInvalidSettings()
+        {
+            Assert.That(_defaultViewport.IsValid, Is.True);
+
+            var invalidWidth = new MinimapViewport { ViewportWidthPx = -10f };
+            Assert.That(invalidWidth.IsValid, Is.False);
+
+            var invalidPadding = new MinimapViewport { ViewportWidthPx = 100f, ViewportHeightPx = 100f, EdgePaddingPx = 50f };
+            Assert.That(invalidPadding.IsValid, Is.False);
+
+            var nanHeading = new MinimapViewport { HeadingDegrees = float.NaN };
+            Assert.That(nanHeading.IsValid, Is.False);
+        }
+
+        [Test]
+        public void TryWorldToMinimap_ValidAndInvalidViewport_BehavesSafely()
+        {
+            var target = new Vec3(50f, 0f, 50f);
+
+            bool ok = MinimapMath.TryWorldToMinimap(target, _defaultViewport, out var result);
+            Assert.That(ok, Is.True);
+            Assert.That(result.DistanceWorld, Is.GreaterThan(0f));
+
+            bool nullOk = MinimapMath.TryWorldToMinimap(target, null, out var nullResult);
+            Assert.That(nullOk, Is.False);
+            Assert.That(nullResult.ScreenPositionPx, Is.EqualTo(Vec2.Zero));
+
+            var invalidViewport = new MinimapViewport { ViewportWidthPx = -1f };
+            bool invalidOk = MinimapMath.TryWorldToMinimap(target, invalidViewport, out var invalidResult);
+            Assert.That(invalidOk, Is.False);
         }
 
         [Test]

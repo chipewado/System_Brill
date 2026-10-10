@@ -223,7 +223,8 @@ namespace Assistant.Core.Discovery
             DateTimeOffset now = _clock.UtcNow;
             if (_gameApi != null)
             {
-                if (_lastTickScanTime == null || (now - _lastTickScanTime.Value) >= ScanInterval)
+                TimeSpan? elapsed = _lastTickScanTime.HasValue ? now - _lastTickScanTime.Value : null;
+                if (!elapsed.HasValue || elapsed.Value >= ScanInterval || elapsed.Value < TimeSpan.Zero)
                 {
                     var playerState = _gameApi.GetPlayerState();
                     var scanRegion = new Region(playerState.Position, ScanRadius);

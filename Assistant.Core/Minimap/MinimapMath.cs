@@ -51,6 +51,22 @@ namespace Assistant.Core.Minimap
         private const double DegToRad = Math.PI / 180.0;
 
         /// <summary>
+        /// Attempts to transform a 3D world position into 2D minimap widget coordinates.
+        /// Returns false if viewport is null or invalid, avoiding exceptions in presentation/UI loops.
+        /// </summary>
+        public static bool TryWorldToMinimap(Vec3 targetWorld, MinimapViewport? viewport, out MinimapCoordinateResult result)
+        {
+            if (viewport == null || !viewport.IsValid)
+            {
+                result = default;
+                return false;
+            }
+
+            result = WorldToMinimap(targetWorld, viewport);
+            return true;
+        }
+
+        /// <summary>
         /// Transforms a 3D world position into 2D minimap widget coordinates with ray clamping.
         /// </summary>
         /// <param name="targetWorld">Target point in world space.</param>
