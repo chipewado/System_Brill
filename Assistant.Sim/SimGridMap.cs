@@ -1,21 +1,23 @@
 using System;
+using Assistant.Core.Abstractions;
 using Assistant.Core.Data;
 
 namespace Assistant.Sim
 {
-    public class SimGridMap
+    public class SimGridMap : INavGrid
     {
         public int GridWidth { get; }
         public int GridHeight { get; }
         public float CellSize { get; }
+        public float MinTraversalCost => 1.0f;
 
         private readonly SimCellType[,] _cells;
 
         public SimGridMap(int width = 100, int height = 100, float cellSize = 10f)
         {
-            if (width <= 0) throw new ArgumentOutOfRangeException(nameof(width));
-            if (height <= 0) throw new ArgumentOutOfRangeException(nameof(height));
-            if (cellSize <= 0) throw new ArgumentOutOfRangeException(nameof(cellSize));
+            if (width <= 0) throw new ArgumentOutOfRangeException(nameof(width), "Width must be positive");
+            if (height <= 0) throw new ArgumentOutOfRangeException(nameof(height), "Height must be positive");
+            if (!float.IsFinite(cellSize) || cellSize <= 0f) throw new ArgumentOutOfRangeException(nameof(cellSize), "CellSize must be positive and finite");
 
             GridWidth = width;
             GridHeight = height;
@@ -35,6 +37,11 @@ namespace Assistant.Sim
 
         public GridPosition WorldToGrid(Vec3 pos)
         {
+            if (!float.IsFinite(pos.X) || !float.IsFinite(pos.Z))
+            {
+                return new GridPosition(int.MinValue, int.MinValue);
+            }
+
             int gx = (int)Math.Floor(pos.X / CellSize);
             int gz = (int)Math.Floor(pos.Z / CellSize);
             return new GridPosition(gx, gz);
@@ -44,7 +51,7 @@ namespace Assistant.Sim
         {
             return new Vec3(
                 (gridPos.X + 0.5f) * CellSize,
-                0,
+                0f,
                 (gridPos.Z + 0.5f) * CellSize
             );
         }
@@ -78,7 +85,9 @@ namespace Assistant.Sim
 
         public bool IsWalkable(GridPosition gridPos)
         {
-            return GetCell(gridPos).IsWalkable();
+            if (!IsInBounds(gridPos)) return false;
+            float cost = GetTraversalCost(gridPos);
+            return float.IsFinite(cost) && cost >= MinTraversalCost;
         }
 
         public bool IsWalkable(Vec3 pos)
@@ -89,6 +98,7 @@ namespace Assistant.Sim
 
         public float GetTraversalCost(GridPosition gridPos)
         {
+            if (!IsInBounds(gridPos)) return float.PositiveInfinity;
             return GetCell(gridPos).GetTraversalCost();
         }
 
