@@ -10,13 +10,21 @@ namespace Assistant.Core.Discovery
     /// Discovery engine orchestrating pull-based spatial scans, coverage-based TTL eviction,
     /// bounded coverage history tracking, and region-aware invalidation.
     ///
-    /// THREADING MODEL:
-    /// Thread-safe engine with internal serialization.
-    /// All internal state modifications (repository upserts, coverage history recording,
-    /// pruning, and map invalidations) are guarded by an internal monitor lock (_syncLock).
-    /// All events (TokensDiscovered, TokensExpired) are strictly raised OUTSIDE the lock boundary.
-    /// Event subscriber invocations are isolated: any exception thrown by a subscriber is caught
-    /// and suppressed to ensure that other subscribers are executed and engine stability is preserved.
+    /// LOCK HIERARCHY & THREADING MODEL:
+    /// 1. Service Lock (_syncLock): Acquired first by TokenDiscoveryService methods.
+    /// 2. Repository Lock (TokenRepository._lock): Acquired second when TokenRepository operations are invoked.
+    /// Lock order is strictly: TokenDiscoveryService._syncLock -> TokenRepository._lock.
+    /// Deadlock prevention guarantees:
+    /// - TokenRepository never holds or requests TokenDiscoveryService locks.
+    /// - TokenRepository contains no external callbacks or delegate invocations.
+    /// - All TokenDiscoveryService events (TokensDiscovered, TokensExpired) are strictly raised
+    ///   OUTSIDE the _syncLock boundary.
+    /// - Any subscriber callback exception is caught and suppressed to prevent re-entrancy issues
+    ///   and preserve engine stability.
+    ///
+    /// EVENT CONTRACT:
+    /// Only TokensDiscovered and TokensExpired events are raised by this service as specified in the contract.
+    /// Removal events (e.g. manual removal or collection) are not raised; consumers re-read repository snapshots.
     /// </summary>
     public class TokenDiscoveryService : ITokenDiscoveryService, IDisposable
     {
@@ -38,8 +46,21 @@ namespace Assistant.Core.Discovery
         public TimeSpan ScanInterval { get; set; }
         public float ScanRadius { get; set; }
 
+        internal int CoverageHistoryCount
+        {
+            get
+            {
+                lock (_syncLock)
+                {
+                    return _coverageHistory.Count;
+                }
+            }
+        }
+
         public event Action<IReadOnlyList<TokenLocation>>? TokensDiscovered;
         public event Action<IReadOnlyList<string>>? TokensExpired;
+
+        private DateTimeOffset? _lastTickScanTime;
 
         public TokenDiscoveryService(
             IMapProvider mapProvider,
@@ -79,16 +100,17 @@ namespace Assistant.Core.Discovery
             var discoveredToNotify = new List<TokenLocation>();
             int processedCount = 0;
 
+            // Fetch raw objects before recording coverage. If IMapProvider throws,
+            // no coverage entry is added and no false eviction can occur.
+            var rawObjects = _mapProvider.GetObjects(region);
+            var mapData = _mapProvider.GetMap();
+
             lock (_syncLock)
             {
-                // 1. Record scan coverage history
-                _coverageHistory.Add(new CoverageRecord(new Region(region.Center, region.Radius), now));
+                // Record scan coverage history only after successful fetch
+                AddCoverageRecordInternal(new Region(region.Center, region.Radius), now);
 
-                // 2. Fetch raw objects in scan region
-                var rawObjects = _mapProvider.GetObjects(region);
-                var mapData = _mapProvider.GetMap();
-
-                // 3. Track seen IDs within this scan batch for deterministic first-occurrence-wins
+                // Track seen IDs within this scan batch for deterministic first-occurrence-wins
                 var seenIdsInBatch = new HashSet<string>(StringComparer.Ordinal);
 
                 foreach (var raw in rawObjects)
@@ -122,17 +144,23 @@ namespace Assistant.Core.Discovery
                         continue;
                     }
 
-                    // 4. Check existing repository token state
+                    // Check existing repository token state
                     var existing = _repository.Get(parsedToken.Id);
                     if (existing == null)
                     {
-                        // Brand new token
+                        // Brand new token (or token reappearing after eviction: DetectedAt = now)
                         _repository.Add(parsedToken);
                         discoveredToNotify.Add(parsedToken.Clone());
                         processedCount++;
                     }
                     else
                     {
+                        // Collected tokens must never be resurrected by a subsequent scan
+                        if (existing.IsCollected)
+                        {
+                            continue;
+                        }
+
                         // Check if mutated: Position (beyond epsilon), Rarity, or EstimatedValue
                         bool posChanged = Vec3.Distance(existing.Position, parsedToken.Position) > PositionChangeEpsilon;
                         bool rarityChanged = existing.Rarity != parsedToken.Rarity;
@@ -160,7 +188,7 @@ namespace Assistant.Core.Discovery
                 PruneCoverageHistoryInternal();
             }
 
-            // 5. Raise discovery event outside lock
+            // Raise discovery event outside lock
             if (discoveredToNotify.Count > 0)
             {
                 var sorted = discoveredToNotify.OrderBy(t => t.Id, StringComparer.Ordinal).ToList();
@@ -192,11 +220,16 @@ namespace Assistant.Core.Discovery
 
         public void Tick()
         {
+            DateTimeOffset now = _clock.UtcNow;
             if (_gameApi != null)
             {
-                var playerState = _gameApi.GetPlayerState();
-                var scanRegion = new Region(playerState.Position, ScanRadius);
-                ScanRegion(scanRegion);
+                if (_lastTickScanTime == null || (now - _lastTickScanTime.Value) >= ScanInterval)
+                {
+                    var playerState = _gameApi.GetPlayerState();
+                    var scanRegion = new Region(playerState.Position, ScanRadius);
+                    ScanRegion(scanRegion);
+                    _lastTickScanTime = now;
+                }
             }
 
             PruneStaleTokens();
@@ -308,6 +341,30 @@ namespace Assistant.Core.Discovery
         private void OnMapChanged(MapChangedEventArgs args)
         {
             HandleMapChanged(args);
+        }
+
+        private void AddCoverageRecordInternal(Region region, DateTimeOffset scannedAt)
+        {
+            // Coalesce entries with identical center+radius (keep the newer)
+            for (int i = _coverageHistory.Count - 1; i >= 0; i--)
+            {
+                var existing = _coverageHistory[i];
+                if (existing.Region.Center == region.Center && Math.Abs(existing.Region.Radius - region.Radius) < 0.0001f)
+                {
+                    _coverageHistory.RemoveAt(i);
+                }
+            }
+
+            _coverageHistory.Add(new CoverageRecord(new Region(region.Center, region.Radius), scannedAt));
+
+            // When still at MaxCoverageHistoryCapacity, drop the oldest.
+            // Consequence: Dropping older coverage records means unconfirmed tokens whose LastConfirmedAt
+            // precedes the dropped scan will not be pruned by this historical coverage window until a new
+            // qualifying scan covers them.
+            if (_coverageHistory.Count > MaxCoverageHistoryCapacity)
+            {
+                _coverageHistory.RemoveRange(0, _coverageHistory.Count - MaxCoverageHistoryCapacity);
+            }
         }
 
         private void PruneCoverageHistoryInternal()

@@ -496,6 +496,301 @@ namespace Assistant.Tests.Discovery
 
         #endregion
 
+        #region Step 1 - Phase 2A Hardening Tests
+
+        [Test]
+        public void Tick_RespectsScanInterval_NoScanBeforeInterval_ScansAtOrAfterInterval()
+        {
+            _service.ScanInterval = TimeSpan.FromSeconds(2.0);
+
+            // Spawn first token
+            _gameApi.SpawnToken(new TokenLocation { Id = "t-tick-1", Position = Vec3.Zero, EstimatedValue = 10 });
+
+            // First Tick() should run scan immediately
+            _service.Tick();
+            Assert.That(_repository.Get("t-tick-1"), Is.Not.Null, "First Tick must scan immediately");
+
+            // Spawn second token
+            _gameApi.SpawnToken(new TokenLocation { Id = "t-tick-2", Position = Vec3.Zero, EstimatedValue = 20 });
+
+            // Advance clock by 1.0s (< 2.0s interval)
+            _clock.AdvanceSeconds(1.0);
+            _service.Tick();
+            Assert.That(_repository.Get("t-tick-2"), Is.Null, "Tick before ScanInterval elapsed must not trigger scan");
+
+            // Advance clock by another 1.0s (total 2.0s >= interval)
+            _clock.AdvanceSeconds(1.0);
+            _service.Tick();
+            Assert.That(_repository.Get("t-tick-2"), Is.Not.Null, "Tick at or after ScanInterval must trigger scan");
+        }
+
+        [Test]
+        public void Tick_ScansPlayerPositionWithScanRadius_DiscoversOnlyWithinRadius()
+        {
+            _service.ScanRadius = 50f;
+            _gameApi.Player.Teleport(new Vec3(100f, 0, 100f));
+
+            // Within radius: distance 20 <= 50
+            _gameApi.SpawnToken(new TokenLocation { Id = "t-near", Position = new Vec3(120f, 0, 100f), EstimatedValue = 10 });
+            // Outside radius: distance 100 > 50
+            _gameApi.SpawnToken(new TokenLocation { Id = "t-far", Position = new Vec3(200f, 0, 100f), EstimatedValue = 10 });
+
+            _service.Tick();
+
+            Assert.That(_repository.Get("t-near"), Is.Not.Null);
+            Assert.That(_repository.Get("t-far"), Is.Null);
+        }
+
+        [Test]
+        public void ScanAll_CoversFullMapBounds_DiscoversTokensAcrossEntireMap()
+        {
+            _gameApi.SpawnToken(new TokenLocation { Id = "t-nw", Position = new Vec3(100, 0, 100), EstimatedValue = 10 });
+            _gameApi.SpawnToken(new TokenLocation { Id = "t-se", Position = new Vec3(900, 0, 900), EstimatedValue = 15 });
+
+            int scanned = _service.ScanAll();
+
+            Assert.That(scanned, Is.EqualTo(2));
+            Assert.That(_repository.Get("t-nw"), Is.Not.Null);
+            Assert.That(_repository.Get("t-se"), Is.Not.Null);
+        }
+
+        [Test]
+        public void ScanRegion_CollectedToken_IsNotResurrectedByLaterScan()
+        {
+            _gameApi.SpawnToken(new TokenLocation { Id = "t-collected", Position = new Vec3(10, 0, 10), EstimatedValue = 10 });
+            _service.ScanRegion(new Region(Vec3.Zero, 50f));
+
+            // Mark as collected
+            _gameApi.CollectToken("t-collected");
+            var stored = _repository.Get("t-collected");
+            Assert.That(stored, Is.Not.Null);
+            Assert.That(stored!.IsCollected, Is.True);
+
+            // Subsequent scan finds the raw object in map
+            bool discoveredFired = false;
+            _service.TokensDiscovered += _ => discoveredFired = true;
+
+            _service.ScanRegion(new Region(Vec3.Zero, 50f));
+
+            Assert.That(discoveredFired, Is.False, "Collected token must not fire TokensDiscovered on subsequent scans");
+            var afterScan = _repository.Get("t-collected");
+            Assert.That(afterScan!.IsCollected, Is.True, "Collected token must remain collected and never resurrected");
+        }
+
+        [Test]
+        public void ScanRegion_TokenReappearingAfterEviction_IsReAddedWithClockUtcNowAsDetectedAt()
+        {
+            var initialDetected = _clock.UtcNow;
+            _gameApi.SpawnToken(new TokenLocation { Id = "t-reappear", Position = new Vec3(10, 0, 10), EstimatedValue = 10 });
+            _service.ScanRegion(new Region(Vec3.Zero, 50f));
+
+            var stored = _repository.Get("t-reappear");
+            Assert.That(stored!.DetectedAt, Is.EqualTo(initialDetected));
+
+            // Evict token from repository (e.g. map change, TTL, or eviction)
+            _repository.Remove("t-reappear");
+            Assert.That(_repository.Get("t-reappear"), Is.Null, "Token must be evicted");
+
+            // Advance time significantly
+            _clock.AdvanceSeconds(100);
+            var reDetectedTime = _clock.UtcNow;
+
+            // Re-scan region where token reappears
+            _service.ScanRegion(new Region(Vec3.Zero, 50f));
+
+            var reAdded = _repository.Get("t-reappear");
+            Assert.That(reAdded, Is.Not.Null);
+            Assert.That(reAdded!.DetectedAt, Is.EqualTo(reDetectedTime), "Reappearing token must receive new DetectedAt = Clock.UtcNow");
+            Assert.That(reAdded.DetectedAt, Is.GreaterThan(initialDetected));
+        }
+
+        [Test]
+        public void ScanRegion_ProviderThrows_NoCoverageAddedAndNothingEvicted()
+        {
+            var token = new TokenLocation
+            {
+                Id = "t-safe-throw",
+                Position = new Vec3(10, 0, 10),
+                EstimatedValue = 10,
+                DetectedAt = _clock.UtcNow,
+                LastConfirmedAt = _clock.UtcNow
+            };
+            _repository.Add(token);
+
+            // Advance clock past TTL
+            _clock.AdvanceSeconds(50);
+
+            var throwingProvider = new ThrowingMapProvider();
+            var serviceWithFailingProvider = new TokenDiscoveryService(
+                throwingProvider,
+                _repository,
+                _parser,
+                _validator,
+                _clock,
+                ttlSeconds: 30f);
+
+            Assert.Throws<InvalidOperationException>(() =>
+                serviceWithFailingProvider.ScanRegion(new Region(Vec3.Zero, 50f)));
+
+            Assert.That(serviceWithFailingProvider.CoverageHistoryCount, Is.EqualTo(0), "Failed scan must record zero coverage entries");
+
+            int pruned = serviceWithFailingProvider.PruneStaleTokens();
+            Assert.That(pruned, Is.EqualTo(0), "No token should be evicted as a result of a failed scan");
+            Assert.That(_repository.Get("t-safe-throw"), Is.Not.Null);
+        }
+
+        [Test]
+        public void CoverageHistory_CoalesceIdenticalCenterAndRadius_KeepsNewerAndPreventsDuplicateGrowth()
+        {
+            var region = new Region(new Vec3(50, 0, 50), 30f);
+
+            for (int i = 0; i < 5; i++)
+            {
+                _clock.AdvanceSeconds(1);
+                _service.ScanRegion(region);
+            }
+
+            Assert.That(_service.CoverageHistoryCount, Is.EqualTo(1), "Coverage entries with identical center and radius must be coalesced");
+        }
+
+        [Test]
+        public void CoverageHistory_MaxCapacity_DropsOldestAndPreservesCap()
+        {
+            // Perform scans with unique centers to fill history beyond capacity
+            for (int i = 0; i < TokenDiscoveryService.MaxCoverageHistoryCapacity + 25; i++)
+            {
+                _service.ScanRegion(new Region(new Vec3(i * 100f, 0, 0), 10f));
+            }
+
+            Assert.That(_service.CoverageHistoryCount, Is.EqualTo(TokenDiscoveryService.MaxCoverageHistoryCapacity),
+                "Coverage history must not exceed MaxCoverageHistoryCapacity");
+        }
+
+        [Test]
+        public void ParallelOperations_TickScanRegionAndHandleMapChanged_NoDeadlock()
+        {
+            using var cts = new System.Threading.CancellationTokenSource(TimeSpan.FromSeconds(5));
+            var tasks = new List<System.Threading.Tasks.Task>();
+
+            for (int i = 0; i < 4; i++)
+            {
+                int workerId = i;
+                tasks.Add(System.Threading.Tasks.Task.Run(() =>
+                {
+                    for (int step = 0; step < 50; step++)
+                    {
+                        if (cts.Token.IsCancellationRequested) break;
+
+                        if (workerId == 0)
+                        {
+                            _service.Tick();
+                        }
+                        else if (workerId == 1)
+                        {
+                            _service.ScanRegion(new Region(new Vec3(step, 0, step), 50f));
+                        }
+                        else if (workerId == 2)
+                        {
+                            _service.HandleMapChanged(MapChangedEventArgs.SubRegion(new Region(new Vec3(step, 0, step), 25f), "Earthquake", _clock.UtcNow));
+                        }
+                        else
+                        {
+                            _service.PruneStaleTokens();
+                        }
+                    }
+                }, cts.Token));
+            }
+
+            bool completed = System.Threading.Tasks.Task.WaitAll(tasks.ToArray(), TimeSpan.FromSeconds(5));
+            Assert.That(completed, Is.True, "Parallel operations must complete without deadlock within timeout");
+        }
+
+        [Test]
+        public void Scenario_DeterministicReplay_ProducesIdenticalStateAndEvents()
+        {
+            (List<string> Discovered, List<string> Expired, List<string> FinalSnapshot) RunSimulation()
+            {
+                var clock = new FakeClock(new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero));
+                var repo = new TokenRepository(50f);
+                var parser = new DefaultTokenParser();
+                var validator = new TokenValidator(clock, 30f);
+                var gameApi = new SimGameApi(clock: clock);
+                var service = new TokenDiscoveryService(gameApi, repo, parser, validator, clock, gameApi, ttlSeconds: 30f);
+
+                var discoveredLog = new List<string>();
+                var expiredLog = new List<string>();
+
+                service.TokensDiscovered += tokens =>
+                {
+                    foreach (var t in tokens) discoveredLog.Add($"{t.Id}:{t.Position}:{t.EstimatedValue}");
+                };
+                service.TokensExpired += ids =>
+                {
+                    foreach (var id in ids) expiredLog.Add(id);
+                };
+
+                // Seeded sequence of operations
+                var rng = new Random(1337);
+                for (int step = 0; step < 20; step++)
+                {
+                    clock.AdvanceSeconds(2);
+
+                    if (step % 2 == 0)
+                    {
+                        gameApi.SpawnToken(new TokenLocation
+                        {
+                            Id = $"token_{step}",
+                            Position = new Vec3(rng.Next(-50, 50), 0, rng.Next(-50, 50)),
+                            EstimatedValue = rng.Next(1, 100),
+                            Rarity = (TokenRarity)rng.Next(0, 4)
+                        });
+                    }
+
+                    service.Tick();
+
+                    if (step == 8)
+                    {
+                        gameApi.CollectToken("token_0");
+                    }
+
+                    if (step == 12)
+                    {
+                        service.HandleMapChanged(MapChangedEventArgs.SubRegion(new Region(Vec3.Zero, 20f), "CaveIn", clock.UtcNow));
+                    }
+                }
+
+                var finalSnapshot = repo.GetAvailable()
+                    .OrderBy(t => t.Id, StringComparer.Ordinal)
+                    .Select(t => $"{t.Id}:{t.Position}:{t.EstimatedValue}:{t.IsCollected}")
+                    .ToList();
+
+                return (discoveredLog, expiredLog, finalSnapshot);
+            }
+
+            var run1 = RunSimulation();
+            var run2 = RunSimulation();
+
+            Assert.That(run1.Discovered, Is.EqualTo(run2.Discovered), "Discovered events must be deterministically identical");
+            Assert.That(run1.Expired, Is.EqualTo(run2.Expired), "Expired events must be deterministically identical");
+            Assert.That(run1.FinalSnapshot, Is.EqualTo(run2.FinalSnapshot), "Final repository snapshots must be deterministically identical");
+        }
+
+        [Test]
+        public void Contract_ITokenDiscoveryService_EmitsOnlyDiscoveredAndExpired_ConsumersRereadSnapshots()
+        {
+            // Verify by reflection / contract design that ITokenDiscoveryService contains only the two contract events
+            var eventNames = typeof(ITokenDiscoveryService).GetEvents().Select(e => e.Name).OrderBy(n => n).ToList();
+            Assert.That(eventNames, Is.EqualTo(new[] { "TokensDiscovered", "TokensExpired" }));
+        }
+
+        #endregion
+
+        private sealed class ThrowingMapProvider : IMapProvider
+        {
+            public MapData GetMap() => new MapData("map", new MapBounds(new Vec3(-100, 0, -100), new Vec3(100, 0, 100)));
+            public IEnumerable<RawMapObject> GetObjects(Region region) => throw new InvalidOperationException("Simulated map fetch fault.");
+        }
+
         private sealed class MockMapProvider : IMapProvider
         {
             private readonly IEnumerable<RawMapObject> _objects;

@@ -6,6 +6,15 @@ using Assistant.Core.Data;
 
 namespace Assistant.Core.Discovery
 {
+    /// <summary>
+    /// Thread-safe in-memory token repository with spatial grid indexing.
+    /// 
+    /// LOCKING HIERARCHY CONTRACT:
+    /// - Guards all internal collections with an internal monitor lock (_lock).
+    /// - Leaf component in the lock hierarchy: operations never invoke external delegates, callbacks, or events.
+    /// - When used within TokenDiscoveryService, the lock order is strictly Service Lock -> Repository Lock.
+    /// - Re-entrancy into TokenDiscoveryService from within a TokenRepository lock is impossible.
+    /// </summary>
     public class TokenRepository : ITokenRepository
     {
         private readonly object _lock = new object();
