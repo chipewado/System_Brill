@@ -299,7 +299,8 @@ namespace Assistant.Core.Ranking
             PlayerState player,
             RankingConfig config,
             string? currentTargetId,
-            IReadOnlyDictionary<string, float>? verifiedPathCosts = null);
+            IReadOnlyDictionary<string, float>? verifiedPathCosts = null,
+            float lineCostPerMeter = 1.0f);
     }
 }
 ```
@@ -413,10 +414,15 @@ Let the start cell be $c_{\text{start}} = \text{WorldToGrid}(p)$ and goal cell b
 
 ### 3.2 Monotonic Scoring Upper Bound
 
-1. **Travel Time Lower Bound**:
+1. **Travel Time Lower Bound & Line Cost Per Meter**:
    $$v_{\text{eff}} = \begin{cases} \text{player.Speed}, & \text{if } \text{float.IsFinite(player.Speed)} \text{ and } \text{player.Speed} > 0 \\ \text{config.DefaultSpeed}, & \text{otherwise} \end{cases}$$
-   $$T_{\text{sec, min}} = \frac{C_{\text{lower}}(p, t)}{v_{\text{eff}}} = \frac{\text{MinTraversalCost} \cdot d_{2D}(p, t)}{v_{\text{eff}}}$$
-   $$T_{\text{sec, path}} = \frac{\text{pathCostWorld}}{v_{\text{eff}}}$$
+   - `RankCandidates` accepts parameter `float lineCostPerMeter = 1.0f` ($= \text{grid.MinTraversalCost}$).
+   - For candidates **NOT** in the `verifiedPathCosts` dictionary:
+     $$T_{\text{sec, min}} = \frac{C_{\text{lower}}(p, t)}{v_{\text{eff}}} = \frac{\text{lineCostPerMeter} \cdot d_{2D}(p, t)}{v_{\text{eff}}}$$
+     `PathCostWorldUnits` $= \text{lineCostPerMeter} \cdot d_{2D}(p, t)$, and `IsPathVerified = false` (upper-bound stage).
+   - For candidates **IN** the `verifiedPathCosts` dictionary:
+     $$T_{\text{sec, path}} = \frac{\text{pathCostWorld}}{v_{\text{eff}}}$$
+     `PathCostWorldUnits` $= \text{pathCostWorld}$, and `IsPathVerified = true`.
    Since $C_{\text{lower}} \le \text{pathCostWorld}$, we have $T_{\text{sec, min}} \le T_{\text{sec, path}}$.
 
 2. **Component Normalization & Clamping**:
