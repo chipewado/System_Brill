@@ -35,5 +35,22 @@ namespace Assistant.Core.Data
         {
             return MinimapViewport.CreateFromConfig(this, centerWorld, headingDegrees, baseWorldUnitsPerPixel, widthPx, heightPx, edgePaddingPx, rotateWithPlayer);
         }
+
+        /// <summary>
+        /// Creates a defensive clone of this configuration.
+        /// </summary>
+        public OverlayConfig Clone()
+        {
+            return new OverlayConfig
+            {
+                TracerMaxDistance = TracerMaxDistance,
+                MaxTracerCount = MaxTracerCount,
+                MaxVisibleMarkers = MaxVisibleMarkers,
+                ShowActiveModes = ShowActiveModes,
+                ShowPlayerCoordinates = ShowPlayerCoordinates,
+                CoordinateFormat = CoordinateFormat,
+                MinimapZoom = MinimapZoom
+            };
+        }
     }
 }
