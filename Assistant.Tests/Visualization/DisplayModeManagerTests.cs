@@ -136,7 +136,24 @@ namespace Assistant.Tests.Visualization
             var config = new OverlayConfig { MaxVisibleMarkers = 3 };
             _manager = new DisplayModeManager(new[] { BuiltInTemplates.CreateAllTokens() }, config);
 
-            var tokens = new List<TokenLocation>
+            // 1. Verify distance tie-breaker with distinct distances (kills mutant #5)
+            // Even though 'z_closest' has lexicographically higher Id than 'a_furthest', distance takes precedence.
+            var tokensByDistance = new List<TokenLocation>
+            {
+                new TokenLocation { Id = "a_furthest", Rarity = TokenRarity.Epic, EstimatedValue = 50, Position = new Vec3(40, 0, 0) },
+                new TokenLocation { Id = "m_mid", Rarity = TokenRarity.Epic, EstimatedValue = 50, Position = new Vec3(20, 0, 0) },
+                new TokenLocation { Id = "z_closest", Rarity = TokenRarity.Epic, EstimatedValue = 50, Position = new Vec3(10, 0, 0) },
+                new TokenLocation { Id = "b_far", Rarity = TokenRarity.Epic, EstimatedValue = 50, Position = new Vec3(30, 0, 0) }
+            };
+
+            var filteredDist = _manager.FilterTokens(tokensByDistance, _playerPos);
+            Assert.That(filteredDist.Count, Is.EqualTo(3));
+            Assert.That(filteredDist[0].Id, Is.EqualTo("z_closest")); // dist 10
+            Assert.That(filteredDist[1].Id, Is.EqualTo("m_mid"));     // dist 20
+            Assert.That(filteredDist[2].Id, Is.EqualTo("b_far"));     // dist 30
+
+            // 2. Complete tie on rarity, value, and distance -> Id ascending: "a", "b", "c"
+            var tokensTie = new List<TokenLocation>
             {
                 new TokenLocation { Id = "c", Rarity = TokenRarity.Epic, EstimatedValue = 50, Position = new Vec3(10, 0, 0) },
                 new TokenLocation { Id = "b", Rarity = TokenRarity.Epic, EstimatedValue = 50, Position = new Vec3(10, 0, 0) },
@@ -144,13 +161,11 @@ namespace Assistant.Tests.Visualization
                 new TokenLocation { Id = "d", Rarity = TokenRarity.Epic, EstimatedValue = 50, Position = new Vec3(10, 0, 0) }
             };
 
-            var filtered = _manager.FilterTokens(tokens, _playerPos);
-
-            Assert.That(filtered.Count, Is.EqualTo(3));
-            // Complete tie on rarity, value, and distance -> Id ascending: "a", "b", "c"
-            Assert.That(filtered[0].Id, Is.EqualTo("a"));
-            Assert.That(filtered[1].Id, Is.EqualTo("b"));
-            Assert.That(filtered[2].Id, Is.EqualTo("c"));
+            var filteredTie = _manager.FilterTokens(tokensTie, _playerPos);
+            Assert.That(filteredTie.Count, Is.EqualTo(3));
+            Assert.That(filteredTie[0].Id, Is.EqualTo("a"));
+            Assert.That(filteredTie[1].Id, Is.EqualTo("b"));
+            Assert.That(filteredTie[2].Id, Is.EqualTo("c"));
         }
 
         [Test]

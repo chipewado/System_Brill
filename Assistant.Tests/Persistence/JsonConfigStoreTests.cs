@@ -216,13 +216,25 @@ namespace Assistant.Tests.Persistence
         {
             // Save initial valid config
             _store.Save("valid_key", new OverlayConfig { MaxVisibleMarkers = 33 });
-            string originalContent = File.ReadAllText(SysPath.Combine(_testDir, "valid_key.json"));
+            string filePath = SysPath.Combine(_testDir, "valid_key.json");
+            string originalContent = File.ReadAllText(filePath);
 
             // Attempt saving null throws ArgumentNullException
             Assert.Throws<ArgumentNullException>(() => _store.Save<OverlayConfig>("valid_key", null!));
 
             // Verify file was not touched
-            Assert.That(File.ReadAllText(SysPath.Combine(_testDir, "valid_key.json")), Is.EqualTo(originalContent));
+            Assert.That(File.ReadAllText(filePath), Is.EqualTo(originalContent));
+
+            // Force atomic write failure during Save by locking target file with FileAccess.ReadWrite, FileShare.None (kills mutant #8)
+            using (var lockStream = new FileStream(filePath, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+            {
+                Assert.That(() => _store.Save("valid_key", new OverlayConfig { MaxVisibleMarkers = 99 }), Throws.Exception);
+            }
+
+            // Assert existing file is intact and no temporary .tmp files remain
+            Assert.That(File.ReadAllText(filePath), Is.EqualTo(originalContent));
+            var tmpFiles = Directory.GetFiles(_testDir, "*.tmp");
+            Assert.That(tmpFiles.Length, Is.EqualTo(0), "All temporary files must be cleaned up on write failure");
         }
 
         [Test]
