@@ -367,5 +367,205 @@ namespace Assistant.Tests.Pathfinding
             Assert.That(fail.Steps.Count, Is.EqualTo(0));
             Assert.That(fail.Waypoints.Count, Is.EqualTo(0));
         }
+
+        [Test]
+        public void AStar_PathValidityProperty_EveryPathReturnedSatisfiesStructuralAndCostInvariants()
+        {
+            var cellSizes = new[] { 1.0f, 2.5f, 10.0f };
+            var rng = new Random(4242);
+
+            foreach (var cellSize in cellSizes)
+            {
+                var grid = new SimGridMap(25, 25, cellSize);
+                grid.GenerateProceduralFeatures(seed: (int)(cellSize * 100));
+                var pathfinder = new AStarPathfinder(grid);
+
+                for (int pair = 0; pair < 30; pair++)
+                {
+                    var start = new GridPosition(rng.Next(0, 25), rng.Next(0, 25));
+                    var goal = new GridPosition(rng.Next(0, 25), rng.Next(0, 25));
+
+                    if (!grid.IsWalkable(start) || !grid.IsWalkable(goal))
+                        continue;
+
+                    var result = pathfinder.FindPath(start, goal);
+                    if (result.Status != PathStatus.Success)
+                        continue;
+
+                    // 1. First step == start cell, last == goal cell
+                    Assert.That(result.Steps[0], Is.EqualTo(start), "First step must be start cell");
+                    Assert.That(result.Steps[result.Steps.Count - 1], Is.EqualTo(goal), "Last step must be goal cell");
+
+                    float recomputedCost = 0f;
+
+                    // 2. Step-by-step invariants
+                    for (int i = 0; i < result.Steps.Count; i++)
+                    {
+                        var current = result.Steps[i];
+                        Assert.That(grid.IsWalkable(current), Is.True, $"Cell {current} at index {i} must be walkable");
+
+                        if (i > 0)
+                        {
+                            var prev = result.Steps[i - 1];
+                            int dx = Math.Abs(current.X - prev.X);
+                            int dz = Math.Abs(current.Z - prev.Z);
+
+                            // 8-way adjacency: dx <= 1, dz <= 1, and (dx + dz > 0)
+                            Assert.That(dx <= 1 && dz <= 1 && (dx + dz > 0), Is.True,
+                                $"Step {prev} -> {current} must be adjacent 8-way neighbor");
+
+                            bool isDiagonal = (dx == 1 && dz == 1);
+                            if (isDiagonal)
+                            {
+                                // Strict no-corner-cutting
+                                var c1 = new GridPosition(prev.X + (current.X - prev.X), prev.Z);
+                                var c2 = new GridPosition(prev.X, prev.Z + (current.Z - prev.Z));
+                                Assert.That(grid.IsWalkable(c1) && grid.IsWalkable(c2), Is.True,
+                                    $"Diagonal move {prev} -> {current} must not cut corners");
+                            }
+
+                            float stepFactor = isDiagonal ? (float)Math.Sqrt(2) : 1.0f;
+                            recomputedCost += grid.CellSize * stepFactor * grid.GetTraversalCost(current);
+                        }
+                    }
+
+                    // 3. Recomputed cost matches GridCost within relative 1e-4
+                    if (result.GridCost > 0)
+                    {
+                        float relDiff = Math.Abs(recomputedCost - result.GridCost) / result.GridCost;
+                        Assert.That(relDiff, Is.LessThan(1e-4f),
+                            $"Recomputed cost {recomputedCost} must match GridCost {result.GridCost} within relative 1e-4");
+                    }
+                    else
+                    {
+                        Assert.That(recomputedCost, Is.EqualTo(0f));
+                    }
+                }
+            }
+        }
+
+        [Test]
+        public void A08_InvariantProperty_RandomMaps_AStarGridCostEqualsReferenceDijkstraAcrossCellSizes()
+        {
+            float[] cellSizes = new[] { 1.0f, 2.5f, 10.0f };
+            int[] seeds = new[] { 111, 222, 333 };
+            var rng = new Random(5555);
+
+            for (int m = 0; m < cellSizes.Length; m++)
+            {
+                float cellSize = cellSizes[m];
+                int seed = seeds[m];
+
+                var grid = new SimGridMap(20, 20, cellSize);
+                grid.GenerateProceduralFeatures(seed);
+                var pathfinder = new AStarPathfinder(grid);
+
+                int tested = 0;
+                while (tested < 35)
+                {
+                    var start = new GridPosition(rng.Next(0, 20), rng.Next(0, 20));
+                    var goal = new GridPosition(rng.Next(0, 20), rng.Next(0, 20));
+
+                    if (!grid.IsWalkable(start) || !grid.IsWalkable(goal))
+                        continue;
+
+                    var astarResult = pathfinder.FindPath(start, goal, maxExpansions: 5000);
+                    var (dijkstraStatus, dijkstraCost) = ReferenceDijkstra.FindShortestPath(grid, start, goal);
+
+                    Assert.That(astarResult.Status, Is.EqualTo(dijkstraStatus),
+                        $"Status mismatch on seed {seed}, cellSize {cellSize} for {start} -> {goal}");
+
+                    if (astarResult.Status == PathStatus.Success)
+                    {
+                        if (dijkstraCost > 0)
+                        {
+                            float relDiff = Math.Abs(astarResult.GridCost - dijkstraCost) / dijkstraCost;
+                            Assert.That(relDiff, Is.LessThan(1e-4f),
+                                $"A* cost {astarResult.GridCost} vs Dijkstra {dijkstraCost} exceeds 1e-4 relative tolerance on seed {seed}, cellSize {cellSize}");
+                        }
+                        else
+                        {
+                            Assert.That(astarResult.GridCost, Is.EqualTo(0f));
+                        }
+                    }
+
+                    tested++;
+                }
+            }
+        }
+
+        [Test]
+        public void AStar_GenerationCounterWraparound_ClearsStampsAndProducesCorrectPath()
+        {
+            var grid = new SimGridMap(10, 10, 10.0f);
+            var pathfinder = new AStarPathfinder(grid);
+
+            // Execute an initial path to populate stamps
+            var r1 = pathfinder.FindPath(new GridPosition(0, 0), new GridPosition(2, 2));
+            Assert.That(r1.Status, Is.EqualTo(PathStatus.Success));
+
+            // Force generation counter to int.MaxValue
+            pathfinder.SetGenerationForTesting(int.MaxValue);
+            Assert.That(pathfinder.CurrentGenerationForTesting, Is.EqualTo(int.MaxValue));
+
+            // Find another path, which triggers AdvanceGeneration with wraparound
+            var r2 = pathfinder.FindPath(new GridPosition(0, 0), new GridPosition(3, 3));
+            Assert.That(r2.Status, Is.EqualTo(PathStatus.Success));
+            Assert.That(pathfinder.CurrentGenerationForTesting, Is.EqualTo(1), "Generation should wrap to 1");
+
+            // Verify stamps array was cleared before writing new generation stamps
+            int matchCount = 0;
+            foreach (var stamp in pathfinder.SeenGenerationForTesting)
+            {
+                if (stamp == 1) matchCount++;
+                else Assert.That(stamp, Is.EqualTo(0), "Non-visited cells must be 0 after wraparound clear");
+            }
+            Assert.That(matchCount, Is.GreaterThan(0));
+        }
+
+        private sealed class ResizableNavGrid : INavGrid
+        {
+            public int GridWidth { get; set; }
+            public int GridHeight { get; set; }
+            public float CellSize => 10.0f;
+            public float MinTraversalCost => 1.0f;
+
+            public ResizableNavGrid(int w, int h)
+            {
+                GridWidth = w;
+                GridHeight = h;
+            }
+
+            public bool IsInBounds(GridPosition p) => p.X >= 0 && p.X < GridWidth && p.Z >= 0 && p.Z < GridHeight;
+            public bool IsWalkable(GridPosition p) => IsInBounds(p);
+            public float GetTraversalCost(GridPosition p) => IsInBounds(p) ? 1.0f : float.PositiveInfinity;
+            public GridPosition WorldToGrid(Vec3 worldPos) => new GridPosition((int)Math.Floor(worldPos.X / CellSize), (int)Math.Floor(worldPos.Z / CellSize));
+            public Vec3 GridToWorld(GridPosition gridPos) => new Vec3((gridPos.X + 0.5f) * CellSize, 0f, (gridPos.Z + 0.5f) * CellSize);
+        }
+
+        [Test]
+        public void AStar_BufferResize_ReallocatesWhenGridDimensionsChange()
+        {
+            var resizable = new ResizableNavGrid(10, 10);
+            var pathfinder = new AStarPathfinder(resizable);
+
+            var r1 = pathfinder.FindPath(new GridPosition(0, 0), new GridPosition(2, 2));
+            Assert.That(r1.Status, Is.EqualTo(PathStatus.Success));
+            Assert.That(pathfinder.BufferCapacityForTesting, Is.EqualTo(100));
+
+            // Change grid dimensions to larger
+            resizable.GridWidth = 20;
+            resizable.GridHeight = 15;
+            var r2 = pathfinder.FindPath(new GridPosition(0, 0), new GridPosition(18, 14));
+            Assert.That(r2.Status, Is.EqualTo(PathStatus.Success));
+            Assert.That(pathfinder.BufferCapacityForTesting, Is.EqualTo(300), "Buffers must expand to 20x15 = 300");
+
+            // Change grid dimensions to smaller
+            resizable.GridWidth = 8;
+            resizable.GridHeight = 8;
+            var r3 = pathfinder.FindPath(new GridPosition(0, 0), new GridPosition(5, 5));
+            Assert.That(r3.Status, Is.EqualTo(PathStatus.Success));
+            Assert.That(pathfinder.BufferCapacityForTesting, Is.EqualTo(64), "Buffers must resize to 8x8 = 64");
+        }
     }
 }

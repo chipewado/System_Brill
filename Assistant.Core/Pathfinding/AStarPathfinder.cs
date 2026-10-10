@@ -5,6 +5,11 @@ using Assistant.Core.Data;
 
 namespace Assistant.Core.Pathfinding
 {
+    /// <summary>
+    /// Computes 8-way navigation paths with strict no-corner-cutting on an <see cref="INavGrid"/>.
+    /// Uses generation-stamped reusable internal arrays for high-throughput single-threaded allocations.
+    /// NOTE: AStarPathfinder is not thread-safe; instantiate per thread or synchronize external calls.
+    /// </summary>
     public sealed class AStarPathfinder : IPathfinder
     {
         private readonly INavGrid _grid;
@@ -15,6 +20,8 @@ namespace Assistant.Core.Pathfinding
         private float[] _gScore = Array.Empty<float>();
         private int[] _cameFrom = Array.Empty<int>();
         private int _currentGeneration;
+        private int _lastWidth;
+        private int _lastHeight;
 
         private readonly MinHeap _openQueue = new MinHeap(256);
 
@@ -217,13 +224,15 @@ namespace Assistant.Core.Pathfinding
 
         private void EnsureBuffers(int capacity)
         {
-            if (_seenGeneration.Length < capacity)
+            if (_seenGeneration.Length != capacity || _lastWidth != _grid.GridWidth || _lastHeight != _grid.GridHeight)
             {
                 _seenGeneration = new int[capacity];
                 _closedGeneration = new int[capacity];
                 _gScore = new float[capacity];
                 _cameFrom = new int[capacity];
                 _currentGeneration = 0;
+                _lastWidth = _grid.GridWidth;
+                _lastHeight = _grid.GridHeight;
             }
         }
 
@@ -237,6 +246,12 @@ namespace Assistant.Core.Pathfinding
             }
             _currentGeneration++;
         }
+
+        internal void SetGenerationForTesting(int generation) => _currentGeneration = generation;
+        internal int CurrentGenerationForTesting => _currentGeneration;
+        internal int BufferCapacityForTesting => _seenGeneration.Length;
+        internal int[] SeenGenerationForTesting => _seenGeneration;
+        internal int[] ClosedGenerationForTesting => _closedGeneration;
 
         private struct HeapNode
         {

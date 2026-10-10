@@ -225,7 +225,7 @@ namespace Assistant.Tests.Persistence
             // Verify file was not touched
             Assert.That(File.ReadAllText(filePath), Is.EqualTo(originalContent));
 
-            // Force atomic write failure during Save by locking target file with FileAccess.ReadWrite, FileShare.None (kills mutant #8)
+            // Force atomic write failure during Save by locking target file with FileAccess.ReadWrite, FileShare.None (Windows-semantics lock test)
             using (var lockStream = new FileStream(filePath, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
             {
                 Assert.That(() => _store.Save("valid_key", new OverlayConfig { MaxVisibleMarkers = 99 }), Throws.Exception);
@@ -235,6 +235,31 @@ namespace Assistant.Tests.Persistence
             Assert.That(File.ReadAllText(filePath), Is.EqualTo(originalContent));
             var tmpFiles = Directory.GetFiles(_testDir, "*.tmp");
             Assert.That(tmpFiles.Length, Is.EqualTo(0), "All temporary files must be cleaned up on write failure");
+        }
+
+        private sealed class ThrowingPayload
+        {
+            public string FirstProperty { get; set; } = "safe_start";
+            public string FailingProperty => throw new InvalidOperationException("Simulated failure during serialization");
+        }
+
+        [Test]
+        public void Save_FailureDuringSerialization_PreservesExistingFileAndCleansUpTemp()
+        {
+            // Note: The FileShare.None lock test in Save_FailedSerializationOrWriting relies on Windows file-locking semantics.
+            // This test forces a failure DURING serialization to guarantee atomic write behavior across all platforms.
+            string key = "atomic_serialization_key";
+            _store.Save(key, new OverlayConfig { MaxVisibleMarkers = 42 });
+            string filePath = SysPath.Combine(_testDir, $"{key}.json");
+            byte[] originalBytes = File.ReadAllBytes(filePath);
+
+            Assert.Throws<InvalidOperationException>(() => _store.Save(key, new ThrowingPayload()));
+
+            byte[] currentBytes = File.ReadAllBytes(filePath);
+            Assert.That(currentBytes, Is.EqualTo(originalBytes), "Existing file content must remain byte-identical after failed serialization");
+
+            var tmpFiles = Directory.GetFiles(_testDir, "*.tmp");
+            Assert.That(tmpFiles, Is.Empty, "No temporary .tmp files must remain after serialization failure");
         }
 
         [Test]

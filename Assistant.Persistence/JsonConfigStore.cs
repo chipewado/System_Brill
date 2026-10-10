@@ -61,10 +61,10 @@ namespace Assistant.Persistence
                     Payload = payloadDto
                 };
 
-                string json = JsonSerializer.Serialize(envelope, _jsonOptions);
-
-                // Write to temporary file first
-                File.WriteAllText(tempFile, json);
+                using (var stream = File.Create(tempFile))
+                {
+                    JsonSerializer.Serialize(stream, envelope, _jsonOptions);
+                }
 
                 // Atomic replacement via File.Move with overwrite: true
                 File.Move(tempFile, targetFile, overwrite: true);

@@ -104,6 +104,9 @@ namespace Assistant.Tests.Pathfinding
 
             var infPos = map.WorldToGrid(new Vec3(float.PositiveInfinity, 0f, 0f));
             Assert.That(map.IsInBounds(infPos), Is.False);
+
+            var negInfPos = map.WorldToGrid(new Vec3(0f, 0f, float.NegativeInfinity));
+            Assert.That(map.IsInBounds(negInfPos), Is.False);
         }
     }
 }
