@@ -19,25 +19,32 @@ namespace Assistant.Core.Data
 
         public static float Distance(Vec3 a, Vec3 b)
         {
-            float dx = a.X - b.X;
-            float dy = a.Y - b.Y;
-            float dz = a.Z - b.Z;
+            double dx = (double)a.X - (double)b.X;
+            double dy = (double)a.Y - (double)b.Y;
+            double dz = (double)a.Z - (double)b.Z;
             return (float)Math.Sqrt(dx * dx + dy * dy + dz * dz);
         }
 
         public static float DistanceSquared(Vec3 a, Vec3 b)
         {
-            float dx = a.X - b.X;
-            float dy = a.Y - b.Y;
-            float dz = a.Z - b.Z;
-            return dx * dx + dy * dy + dz * dz;
+            double dx = (double)a.X - (double)b.X;
+            double dy = (double)a.Y - (double)b.Y;
+            double dz = (double)a.Z - (double)b.Z;
+            return (float)(dx * dx + dy * dy + dz * dz);
         }
 
         public static float Distance2D(Vec3 a, Vec3 b)
         {
-            float dx = a.X - b.X;
-            float dz = a.Z - b.Z;
+            double dx = (double)a.X - (double)b.X;
+            double dz = (double)a.Z - (double)b.Z;
             return (float)Math.Sqrt(dx * dx + dz * dz);
+        }
+
+        public static double Distance2DDouble(Vec3 a, Vec3 b)
+        {
+            double dx = (double)a.X - (double)b.X;
+            double dz = (double)a.Z - (double)b.Z;
+            return Math.Sqrt(dx * dx + dz * dz);
         }
 
         public bool IsFinite() =>
