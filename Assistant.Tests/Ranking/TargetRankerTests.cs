@@ -806,5 +806,19 @@ namespace Assistant.Tests.Ranking
             // Invariant: Single evaluate allocates <= 128 bytes (pure DTO instantiation, no arrays or hashsets)
             Assert.That(allocatedEval, Is.LessThanOrEqualTo(128));
         }
+
+        [Test]
+        public void R26_LowerBoundValidation_GrossViolation_ThrowsArgumentException()
+        {
+            var player = new PlayerState { Position = Vec3.Zero, Speed = 5f };
+            var token = new TokenLocation { Id = "t", Position = new Vec3(100f, 0f, 0f), Rarity = TokenRarity.Common, EstimatedValue = 50f };
+            float minLineLowerBound = 100f; // lineCostPerMeter = 1.0f * 100m
+
+            // Deliberate gross violation: cost = 0.5 * lower bound = 50f
+            float corruptedCost = 0.5f * minLineLowerBound;
+
+            Assert.Throws<ArgumentException>(() =>
+                _ranker.Evaluate(token, player, _config, currentTargetId: null, verifiedPathCost: corruptedCost, lineCostPerMeter: 1.0f));
+        }
     }
 }

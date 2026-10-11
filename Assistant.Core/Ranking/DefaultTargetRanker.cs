@@ -75,15 +75,17 @@ namespace Assistant.Core.Ranking
 
                 double vCost = (double)cost;
 
-                // Lower-bound contract validation: verified cost cannot be strictly less than straight-line lower bound
-                if (vCost < minLineCost - 1e-4)
+                double tol = 1e-5 * Math.Max(1.0, minLineCost) + 1e-6;
+
+                // Lower-bound contract validation: verified cost cannot be strictly less than straight-line lower bound beyond relative tolerance
+                if (vCost < minLineCost - tol)
                 {
                     throw new ArgumentException(
-                        $"Verified path cost ({vCost}) cannot be strictly less than straight-line lower bound ({minLineCost}) under lineCostPerMeter {lineCostPerMeter}.",
+                        $"Verified path cost ({vCost}) cannot be strictly less than straight-line lower bound ({minLineCost}) under lineCostPerMeter {lineCostPerMeter} beyond relative tolerance ({tol}).",
                         nameof(verifiedPathCost));
                 }
 
-                // Guard against floating-point epsilon underflow within tolerance [minLineCost - 1e-4, minLineCost]
+                // Guard against floating-point epsilon underflow within tolerance [minLineCost - tol, minLineCost]
                 pathCostWorld = Math.Max(vCost, minLineCost);
                 isPathVerified = true;
             }
