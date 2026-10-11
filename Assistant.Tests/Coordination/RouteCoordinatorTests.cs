@@ -444,22 +444,14 @@ namespace Assistant.Tests.Coordination
         [Test]
         public void C12_ReachableButLongDetour_TokenBehindLongWallLosesToFartherTokenWithClearPath()
         {
-            // Wall forces token_wall (at (15, 5)) to take a 10-cell detour around wall at row 1
-            // token_open (at (5, 25)) has a straight open path
-            var rows = new[]
-            {
-                "..........", // z=0: open corridor
-                "#########.", // z=1: wall blocking (0..8)
-                "..........", // z=2: open
-            };
+            // Wall at z=1 blocking x=0..8 forces token_wall (at (5, 5), cell (0, 0)) to take a detour around x=9,
+            // while token_clear (at (65, 25), cell (6, 2)) has direct open path from player (at (5, 25), cell (0, 2)).
             var map = new SimGridMap(10, 3, cellSize: 10.0f);
             for (int x = 0; x <= 8; x++) map.SetCell(x, 1, SimCellType.Obstacle);
 
             var pathfinder = new AStarPathfinder(map);
             var player = new PlayerState { Position = new Vec3(5f, 0f, 25f), Speed = 5f }; // Cell (0, 2)
-            // Token behind wall at cell (0, 0)
             var tokenBehindWall = new TokenLocation { Id = "token_wall", Position = new Vec3(5f, 0f, 5f), Rarity = TokenRarity.Common, EstimatedValue = 80f };
-            // Token in clear open space at cell (6, 2)
             var tokenClear = new TokenLocation { Id = "token_clear", Position = new Vec3(65f, 0f, 25f), Rarity = TokenRarity.Common, EstimatedValue = 80f };
 
             var repo = new TestTokenRepo(new[] { tokenBehindWall, tokenClear });
@@ -468,6 +460,12 @@ namespace Assistant.Tests.Coordination
 
             Assert.That(decision.SelectedTarget, Is.Not.Null);
             Assert.That(decision.SelectedTarget!.Id, Is.EqualTo("token_clear"), "Token with clear open path must beat token behind wall requiring long detour");
+            Assert.That(decision.PathSearchesExecuted, Is.EqualTo(2), "Both candidates must be searched before clear path wins");
+
+            var pathWall = pathfinder.FindPath(map.WorldToGrid(player.Position), map.WorldToGrid(tokenBehindWall.Position));
+            float costWall = WorldPathCost.Compute(map, pathWall, player.Position, map.WorldToGrid(player.Position), tokenBehindWall.Position);
+            float straightLineWall = Vec3.Distance2D(player.Position, tokenBehindWall.Position);
+            Assert.That(costWall, Is.GreaterThan(2.0f * straightLineWall), "Detour cost must be more than 2x straight-line cost");
         }
 
         [Test]
@@ -475,31 +473,52 @@ namespace Assistant.Tests.Coordination
         {
             var rng = new Random(42);
 
-            for (int run = 0; run < 10; run++)
+            for (int run = 0; run < 200; run++)
             {
                 var map = new SimGridMap(20, 20, cellSize: 10.0f);
-                // Add some random obstacles
-                for (int i = 0; i < 30; i++)
+                for (int i = 0; i < 40; i++)
                 {
                     int ox = rng.Next(20);
                     int oz = rng.Next(20);
-                    if (ox != 0 || oz != 0) map.SetCell(ox, oz, SimCellType.Obstacle);
+                    if (ox != 0 || oz != 0)
+                    {
+                        var terrain = (i % 3 == 0) ? SimCellType.Obstacle : ((i % 3 == 1) ? SimCellType.RoughTerrain : SimCellType.DangerZone);
+                        map.SetCell(ox, oz, terrain);
+                    }
                 }
 
                 var pathfinder = new AStarPathfinder(map);
-                var player = new PlayerState { Position = new Vec3(5f, 0f, 5f), Speed = 5f };
 
+                // Player at random continuous position inside walkable cell
+                GridPosition playerCell;
+                do { playerCell = new GridPosition(rng.Next(20), rng.Next(20)); } while (!map.IsWalkable(playerCell));
+                float px = (playerCell.X + (float)rng.NextDouble() * 0.8f + 0.1f) * map.CellSize;
+                float pz = (playerCell.Z + (float)rng.NextDouble() * 0.8f + 0.1f) * map.CellSize;
+                var player = new PlayerState { Position = new Vec3(px, 0f, pz), Speed = 5f };
+
+                int tokenCount = rng.Next(4, 13);
                 var tokens = new List<TokenLocation>();
-                for (int t = 0; t < 6; t++)
+                var usedCells = new HashSet<GridPosition> { playerCell };
+
+                for (int t = 0; t < tokenCount; t++)
                 {
-                    int tx = rng.Next(20);
-                    int tz = rng.Next(20);
-                    if (!map.IsWalkable(new GridPosition(tx, tz))) continue;
+                    GridPosition tCell;
+                    int attempts = 0;
+                    do
+                    {
+                        tCell = new GridPosition(rng.Next(20), rng.Next(20));
+                        attempts++;
+                    } while ((!map.IsWalkable(tCell) || !usedCells.Add(tCell)) && attempts < 50);
+
+                    if (attempts >= 50) continue;
+
+                    float tx = (tCell.X + (float)rng.NextDouble() * 0.8f + 0.1f) * map.CellSize;
+                    float tz = (tCell.Z + (float)rng.NextDouble() * 0.8f + 0.1f) * map.CellSize;
 
                     tokens.Add(new TokenLocation
                     {
-                        Id = $"token_{t}",
-                        Position = map.GridToWorld(new GridPosition(tx, tz)),
+                        Id = $"token_{t:D2}",
+                        Position = new Vec3(tx, 0f, tz),
                         Rarity = (TokenRarity)rng.Next(5),
                         EstimatedValue = (float)(rng.NextDouble() * 200.0 + 10.0)
                     });
@@ -507,31 +526,94 @@ namespace Assistant.Tests.Coordination
 
                 if (tokens.Count == 0) continue;
 
-                var repo = new TestTokenRepo(tokens);
-                var coordConfig = new CoordinationConfig(maxPathSearches: 50); // Sufficient budget
-                var coordinator = new RouteCoordinator(repo, _ranker, pathfinder, map);
-                var bbDecision = coordinator.Coordinate(player, _rankingConfig, coordConfig, null);
+                string? currentTargetId = (rng.Next(2) == 0 && tokens.Count > 0) ? tokens[rng.Next(tokens.Count)].Id : null;
+                int maxSearches = (run % 3 == 0) ? tokens.Count : 50;
+                var coordConfig = new CoordinationConfig(maxPathSearches: maxSearches);
 
-                // Exhaustive evaluation: run A* for all tokens, compute WorldPathCost, evaluate score, pick highest ScoreMicros
+                var repo = new TestTokenRepo(tokens);
+                var coordinator = new RouteCoordinator(repo, _ranker, pathfinder, map);
+                var bbDecision = coordinator.Coordinate(player, _rankingConfig, coordConfig, currentTargetId);
+
+                // Exhaustive reference simulation matching coordinator specification
                 TargetEvaluationResult? exhaustiveBest = null;
                 TokenLocation? exhaustiveToken = null;
+                bool isCommitRetained = false;
+                int searchesRun = 0;
+                var searchedIds = new HashSet<string>(StringComparer.Ordinal);
 
-                foreach (var token in tokens)
+                // Step 1: Commit radius check
+                if (!string.IsNullOrEmpty(currentTargetId))
                 {
-                    var path = pathfinder.FindPath(map.WorldToGrid(player.Position), map.WorldToGrid(token.Position));
-                    if (path.Status != PathStatus.Success) continue;
-
-                    float worldCost = WorldPathCost.Compute(map, path, player.Position, map.WorldToGrid(player.Position), token.Position);
-                    if (float.IsPositiveInfinity(worldCost)) continue;
-
-                    var eval = _ranker.Evaluate(token, player, _rankingConfig, null, verifiedPathCost: worldCost, lineCostPerMeter: map.MinTraversalCost);
-                    if (eval == null) continue;
-
-                    if (exhaustiveBest == null || eval.ScoreMicros > exhaustiveBest.ScoreMicros ||
-                       (eval.ScoreMicros == exhaustiveBest.ScoreMicros && StringComparer.Ordinal.Compare(token.Id, exhaustiveToken!.Id) < 0))
+                    var curr = tokens.FirstOrDefault(x => x.Id == currentTargetId);
+                    if (curr != null && Vec3.Distance2D(player.Position, curr.Position) <= coordConfig.CommitRadius)
                     {
-                        exhaustiveBest = eval;
-                        exhaustiveToken = token;
+                        searchesRun++;
+                        searchedIds.Add(curr.Id);
+                        var path = pathfinder.FindPath(map.WorldToGrid(player.Position), map.WorldToGrid(curr.Position));
+                        if (path.Status == PathStatus.Success)
+                        {
+                            float worldCost = WorldPathCost.Compute(map, path, player.Position, map.WorldToGrid(player.Position), curr.Position);
+                            if (float.IsFinite(worldCost))
+                            {
+                                var eval = _ranker.Evaluate(curr, player, _rankingConfig, currentTargetId, verifiedPathCost: worldCost, lineCostPerMeter: map.MinTraversalCost);
+                                if (eval != null)
+                                {
+                                    exhaustiveBest = eval;
+                                    exhaustiveToken = curr;
+                                    isCommitRetained = true;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if (!isCommitRetained || !float.IsPositiveInfinity(coordConfig.CommitOverrideMargin))
+                {
+                    // Rank upper bounds for search order
+                    var upperBounds = _ranker.RankCandidates(tokens, player, _rankingConfig, currentTargetId, lineCostPerMeter: map.MinTraversalCost);
+                    foreach (var ub in upperBounds)
+                    {
+                        if (exhaustiveToken != null && StringComparer.Ordinal.Equals(ub.Token.Id, exhaustiveToken.Id)) continue;
+                        if (searchedIds.Contains(ub.Token.Id)) continue;
+                        if (searchesRun >= maxSearches) break;
+
+                        searchesRun++;
+                        searchedIds.Add(ub.Token.Id);
+                        var path = pathfinder.FindPath(map.WorldToGrid(player.Position), map.WorldToGrid(ub.Token.Position));
+                        if (path.Status != PathStatus.Success) continue;
+
+                        float worldCost = WorldPathCost.Compute(map, path, player.Position, map.WorldToGrid(player.Position), ub.Token.Position);
+                        if (!float.IsFinite(worldCost)) continue;
+
+                        var eval = _ranker.Evaluate(ub.Token, player, _rankingConfig, currentTargetId, verifiedPathCost: worldCost, lineCostPerMeter: map.MinTraversalCost);
+                        if (eval == null) continue;
+
+                        if (exhaustiveBest == null)
+                        {
+                            exhaustiveBest = eval;
+                            exhaustiveToken = ub.Token;
+                        }
+                        else if (isCommitRetained)
+                        {
+                            double weightSum = (double)_rankingConfig.WeightValue + (double)_rankingConfig.WeightTime + (double)_rankingConfig.WeightRarity + (double)_rankingConfig.WeightHysteresis;
+                            long marginMicros = (long)Math.Floor((double)coordConfig.CommitOverrideMargin * weightSum * 1_000_000.0 + 0.5);
+                            long thresholdMicros = exhaustiveBest.ScoreMicros > long.MaxValue - marginMicros ? long.MaxValue : exhaustiveBest.ScoreMicros + marginMicros;
+                            if (eval.ScoreMicros >= thresholdMicros)
+                            {
+                                exhaustiveBest = eval;
+                                exhaustiveToken = ub.Token;
+                                isCommitRetained = false;
+                            }
+                        }
+                        else
+                        {
+                            if (eval.ScoreMicros > exhaustiveBest.ScoreMicros ||
+                               (eval.ScoreMicros == exhaustiveBest.ScoreMicros && StringComparer.Ordinal.Compare(ub.Token.Id, exhaustiveToken!.Id) < 0))
+                            {
+                                exhaustiveBest = eval;
+                                exhaustiveToken = ub.Token;
+                            }
+                        }
                     }
                 }
 
@@ -552,30 +634,88 @@ namespace Assistant.Tests.Coordination
         public void C14_GeometryPropertyWithRealAStar_LowerBoundAndAdmissibilityPreserved()
         {
             var map = new SimGridMap(30, 30, cellSize: 10.0f);
-            var pathfinder = new AStarPathfinder(map);
             var rng = new Random(999);
 
-            for (int trial = 0; trial < 25; trial++)
+            // Add mix of terrain
+            for (int i = 0; i < 60; i++)
+            {
+                int ox = rng.Next(30);
+                int oz = rng.Next(30);
+                var terrain = (i % 3 == 0) ? SimCellType.Obstacle : ((i % 3 == 1) ? SimCellType.RoughTerrain : SimCellType.DangerZone);
+                map.SetCell(ox, oz, terrain);
+            }
+
+            var pathfinder = new AStarPathfinder(map);
+
+            // List of specific edge cases to test:
+            var edgeCases = new List<(Vec3 Player, Vec3 Token, string CaseName)>();
+
+            // Case 1: Same-cell
+            edgeCases.Add((new Vec3(12.5f, 0f, 12.5f), new Vec3(17.5f, 0f, 17.5f), "SameCell"));
+
+            // Case 2: Adjacent cell (cardinal)
+            edgeCases.Add((new Vec3(15.0f, 0f, 15.0f), new Vec3(25.0f, 0f, 15.0f), "AdjacentCardinal"));
+
+            // Case 3: Adjacent cell (diagonal)
+            edgeCases.Add((new Vec3(15.0f, 0f, 15.0f), new Vec3(25.0f, 0f, 25.0f), "AdjacentDiagonal"));
+
+            // Case 4: Near border (0.01m from cell edge)
+            edgeCases.Add((new Vec3(10.01f, 0f, 10.01f), new Vec3(29.99f, 0f, 29.99f), "NearBorder"));
+
+            // Case 5: Snapped-start (player inside obstacle cell (1, 1), snapped to adjacent walkable)
+            map.SetCell(1, 1, SimCellType.Obstacle);
+            map.SetCell(1, 2, SimCellType.Walkable);
+            edgeCases.Add((new Vec3(15.0f, 0f, 15.0f), new Vec3(55.0f, 0f, 55.0f), "SnappedStart"));
+
+            // Plus 500 random trials
+            for (int trial = 0; trial < 500; trial++)
             {
                 float px = (float)(rng.NextDouble() * 250.0 + 10.0);
                 float pz = (float)(rng.NextDouble() * 250.0 + 10.0);
                 float tx = (float)(rng.NextDouble() * 250.0 + 10.0);
                 float tz = (float)(rng.NextDouble() * 250.0 + 10.0);
+                edgeCases.Add((new Vec3(px, 0f, pz), new Vec3(tx, 0f, tz), $"RandomTrial_{trial}"));
+            }
 
-                var player = new PlayerState { Position = new Vec3(px, 0f, pz), Speed = 5f };
-                var token = new TokenLocation { Id = $"t_{trial}", Position = new Vec3(tx, 0f, tz), Rarity = TokenRarity.Common, EstimatedValue = 100f };
+            for (int i = 0; i < edgeCases.Count; i++)
+            {
+                var (playerPos, tokenPos, caseName) = edgeCases[i];
+                var player = new PlayerState { Position = playerPos, Speed = 5f };
+                var token = new TokenLocation { Id = $"t_{i}", Position = tokenPos, Rarity = TokenRarity.Common, EstimatedValue = 100f };
+
+                var goalCell = map.WorldToGrid(token.Position);
+                if (!map.IsInBounds(goalCell) || !map.IsWalkable(goalCell)) continue;
 
                 var startCell = map.WorldToGrid(player.Position);
-                var goalCell = map.WorldToGrid(token.Position);
+                if (!map.IsInBounds(startCell) || !map.IsWalkable(startCell))
+                {
+                    // Snap start cell if unwalkable
+                    bool snapped = false;
+                    for (int dz = -1; dz <= 1 && !snapped; dz++)
+                    {
+                        for (int dx = -1; dx <= 1 && !snapped; dx++)
+                        {
+                            var adj = new GridPosition(startCell.X + dx, startCell.Z + dz);
+                            if (map.IsInBounds(adj) && map.IsWalkable(adj))
+                            {
+                                startCell = adj;
+                                snapped = true;
+                            }
+                        }
+                    }
+                    if (!snapped) continue;
+                }
+
                 var path = pathfinder.FindPath(startCell, goalCell);
                 if (path.Status != PathStatus.Success) continue;
 
                 float worldCost = WorldPathCost.Compute(map, path, player.Position, startCell, token.Position);
                 float dist2D = Vec3.Distance2D(player.Position, token.Position);
                 float minBound = map.MinTraversalCost * dist2D;
+                float tol = 1e-5f * Math.Max(1.0f, minBound) + 1e-6f;
 
-                // 1. MinTraversalCost * Distance2D <= worldCost within tolerance
-                Assert.That(worldCost, Is.GreaterThanOrEqualTo(minBound - 1e-5f));
+                // 1. MinTraversalCost * Distance2D <= worldCost within relative tolerance
+                Assert.That(worldCost, Is.GreaterThanOrEqualTo(minBound - tol), $"Failed for case {caseName}");
 
                 // 2. Straight-line upper bound + slack >= verifiedScore
                 var unverified = _ranker.Evaluate(token, player, _rankingConfig, null, verifiedPathCost: null, lineCostPerMeter: map.MinTraversalCost);
@@ -583,9 +723,325 @@ namespace Assistant.Tests.Coordination
 
                 Assert.That(unverified, Is.Not.Null);
                 Assert.That(verified, Is.Not.Null);
-                Assert.That(unverified!.ScoreMicros + 2L, Is.GreaterThanOrEqualTo(verified!.ScoreMicros));
+                Assert.That(unverified!.ScoreMicros + 2L, Is.GreaterThanOrEqualTo(verified!.ScoreMicros), $"Admissibility failed for case {caseName}");
+
+                // 3. Raw score check bypassing clamp: calculate raw verified score directly with worldCost to confirm clamp does not hide violation
+                double effectiveSpeed = (double)player.Speed;
+                double rawTravelSeconds = (double)worldCost / effectiveSpeed;
+                double rawTRatio = rawTravelSeconds / (double)_rankingConfig.MaxTravelSeconds;
+                double rawSTime = (rawTRatio >= 1.0) ? 0.0 : ((rawTRatio <= 0.0) ? 1.0 : (1.0 - rawTRatio));
+                double rawCompositeScore = (double)_rankingConfig.WeightValue * unverified.NormalizedValue
+                                         + (double)_rankingConfig.WeightTime * rawSTime
+                                         + (double)_rankingConfig.WeightRarity * unverified.NormalizedRarity
+                                         + (double)_rankingConfig.WeightHysteresis * unverified.NormalizedHysteresis;
+                long rawVerifiedScoreMicros = (long)Math.Floor(rawCompositeScore * 1_000_000.0 + 0.5);
+
+                Assert.That(unverified.ScoreMicros + 2L, Is.GreaterThanOrEqualTo(rawVerifiedScoreMicros), $"Raw admissibility without clamp failed for case {caseName}");
             }
         }
+
+        #region Phase 3.3 Hardening & Defect Regression Tests (F-01 to F-07)
+
+        [Test]
+        public void F01_InCommitPruningBoundary_ExactEqualityNotPrunedSolelyOnId()
+        {
+            var grid = new TestNavGrid(new[] { "..........", ".........." });
+            var player = new PlayerState { Position = new Vec3(5f, 0f, 5f), Speed = 5f }; // Cell (0, 0)
+
+            // Incumbent "m_incumbent" inside commit radius
+            var incumbent = new TokenLocation { Id = "m_incumbent", Position = new Vec3(15f, 0f, 5f), Rarity = TokenRarity.Common, EstimatedValue = 500f };
+
+            // Challenger "z_after" whose ID sorts AFTER "m_incumbent"
+            var chalAfter = new TokenLocation { Id = "z_after", Position = new Vec3(25f, 0f, 5f), Rarity = TokenRarity.Common, EstimatedValue = 700f };
+
+            // Challenger "a_before" whose ID sorts BEFORE "m_incumbent"
+            var chalBefore = new TokenLocation { Id = "a_before", Position = new Vec3(25f, 0f, 5f), Rarity = TokenRarity.Common, EstimatedValue = 700f };
+
+            var pureValue = new RankingConfig(weightValue: 1.0f, weightTime: 0f, weightRarity: 0f, weightHysteresis: 0f, valueScale: 1000f);
+            var coordConfig = new CoordinationConfig(commitRadius: 15f, commitOverrideMargin: 0.20f, upperBoundSlackMicros: 0L);
+
+            // Incumbent score = 500,000 micros. Margin = 200,000 micros. Threshold = 700,000 micros.
+
+            // Subtest 1: Inside CommitRadius, challenger "z_after" has upper bound exactly at threshold (700,000)
+            // It MUST NOT be pruned despite "z_after" > "m_incumbent". Its path search MUST be executed.
+            var pathfinderZ = new FakePathfinder();
+            var coordZ = new RouteCoordinator(new TestTokenRepo(new[] { incumbent, chalAfter }), _ranker, pathfinderZ, grid);
+            var decZ = coordZ.Coordinate(player, pureValue, coordConfig, "m_incumbent");
+            Assert.That(decZ.SelectedTarget!.Id, Is.EqualTo("z_after"), "Challenger sorting after incumbent must dethrone at exact threshold match");
+            Assert.That(decZ.PathSearchesExecuted, Is.EqualTo(2), "Challenger path search must have been executed (not pruned)");
+
+            // Subtest 2: Outside CommitRadius, incumbent is evaluated first with higher upper bound,
+            // but its verified score drops to match challenger's upper bound (exact equality).
+            var timeRanking = new RankingConfig(weightValue: 0.5f, weightTime: 0.5f, weightRarity: 0f, weightHysteresis: 0f, valueScale: 1000f, defaultSpeed: 10f, maxTravelSeconds: 100f);
+
+            // Incumbent at (5, 5) cell (0, 0): straight distance 0, value 400 -> upper bound = 700,000 micros
+            var incToken = new TokenLocation { Id = "m_incumbent", Position = new Vec3(5f, 0f, 5f), Rarity = TokenRarity.Common, EstimatedValue = 400f };
+
+            // Challengers at (15, 5) cell (1, 0): straight distance 10m (travel 2s, sTime 0.98), value 400 -> upper bound = 690,000 micros
+            var chalZ = new TokenLocation { Id = "z_after", Position = new Vec3(15f, 0f, 5f), Rarity = TokenRarity.Common, EstimatedValue = 400f };
+            var chalA = new TokenLocation { Id = "a_before", Position = new Vec3(15f, 0f, 5f), Rarity = TokenRarity.Common, EstimatedValue = 400f };
+
+            // Resolver: goal (0, 0) [incumbent] gets 10m detour cost (score drops to 690k).
+            // Goal (1, 0) [challengers] gets 10m direct cost (score is 690k).
+            Func<GridPosition, GridPosition, PathResult> resolver = (s, g) =>
+            {
+                return PathResult.Successful(new[] { s, g }, new[] { new Vec3(s.X * 10f + 5f, 0, 5f), new Vec3(g.X * 10f + 5f, 0, 5f) }, 10f, 1);
+            };
+
+            // Test outside commit radius with "z_after" (ID > m_incumbent):
+            // Incumbent searched first (upper 700k), drops to 690k.
+            // z_after has upper bound 690k == 690k, ID > m_incumbent -> PRUNED!
+            var pfOutsideZ = new FakePathfinder { CustomResolver = resolver };
+            var coordOutZ = new RouteCoordinator(new TestTokenRepo(new[] { incToken, chalZ }), _ranker, pfOutsideZ, grid);
+            var decOutZ = coordOutZ.Coordinate(player, timeRanking, new CoordinationConfig(commitRadius: 0f, upperBoundSlackMicros: 0L), null);
+            Assert.That(decOutZ.SelectedTarget!.Id, Is.EqualTo("m_incumbent"));
+            Assert.That(decOutZ.PathSearchesExecuted, Is.EqualTo(1), "Outside commit radius, equal-score candidate sorting after incumbent is pruned");
+
+            // Test outside commit radius with "a_before" (ID < m_incumbent):
+            // Incumbent searched first, drops to 690k.
+            // a_before has upper bound 690k == 690k, ID < m_incumbent -> NOT pruned, evaluated and wins tie!
+            var pfOutsideA = new FakePathfinder { CustomResolver = resolver };
+            var coordOutA = new RouteCoordinator(new TestTokenRepo(new[] { incToken, chalA }), _ranker, pfOutsideA, grid);
+            var decOutA = coordOutA.Coordinate(player, timeRanking, new CoordinationConfig(commitRadius: 0f, upperBoundSlackMicros: 0L), null);
+            Assert.That(decOutA.SelectedTarget!.Id, Is.EqualTo("a_before"));
+            Assert.That(decOutA.PathSearchesExecuted, Is.EqualTo(2), "Outside commit radius, equal-score candidate sorting before incumbent is evaluated");
+        }
+
+        [Test]
+        [TestCase(0.1f)]
+        [TestCase(0.5f)]
+        [TestCase(1.0f)]
+        [TestCase(2.0f)]
+        [TestCase(10.0f)]
+        public void F02_ScoreScaleAndCommitMargin_ScalesProportionallyAcrossWeightSums(float totalWeight)
+        {
+            var grid = new TestNavGrid(new[] { ".........." });
+            var player = new PlayerState { Position = new Vec3(5f, 0f, 5f), Speed = 5f };
+            var incumbent = new TokenLocation { Id = "m_curr", Position = new Vec3(15f, 0f, 5f), Rarity = TokenRarity.Common, EstimatedValue = 500f };
+
+            // Total weight configured purely via WeightValue
+            var ranking = new RankingConfig(weightValue: totalWeight, weightTime: 0f, weightRarity: 0f, weightHysteresis: 0f, valueScale: 1000f);
+            var coordConfig = new CoordinationConfig(commitRadius: 15f, commitOverrideMargin: 0.20f, upperBoundSlackMicros: 0L);
+
+            // Incumbent score = 500/1000 * totalWeight = 0.50 * totalWeight
+            // Margin = 0.20 * totalWeight
+            // Threshold = 0.70 * totalWeight
+
+            // Challenger A: value 699/1000 (0.699 * totalWeight < threshold) -> must NOT dethrone
+            var chalBelow = new TokenLocation { Id = "chal_below", Position = new Vec3(25f, 0f, 5f), Rarity = TokenRarity.Common, EstimatedValue = 699f };
+            var coordBelow = new RouteCoordinator(new TestTokenRepo(new[] { incumbent, chalBelow }), _ranker, new FakePathfinder(), grid);
+            var decBelow = coordBelow.Coordinate(player, ranking, coordConfig, "m_curr");
+            Assert.That(decBelow.SelectedTarget!.Id, Is.EqualTo("m_curr"), $"Weight {totalWeight}: Challenger below scaled margin must NOT dethrone");
+
+            // Challenger B: value 700/1000 (0.700 * totalWeight == threshold) -> MUST dethrone
+            var chalExact = new TokenLocation { Id = "chal_exact", Position = new Vec3(25f, 0f, 5f), Rarity = TokenRarity.Common, EstimatedValue = 700f };
+            var coordExact = new RouteCoordinator(new TestTokenRepo(new[] { incumbent, chalExact }), _ranker, new FakePathfinder(), grid);
+            var decExact = coordExact.Coordinate(player, ranking, coordConfig, "m_curr");
+            Assert.That(decExact.SelectedTarget!.Id, Is.EqualTo("chal_exact"), $"Weight {totalWeight}: Challenger at exact scaled margin MUST dethrone");
+
+            // Challenger C: value 701/1000 (0.701 * totalWeight > threshold) -> MUST dethrone
+            var chalAbove = new TokenLocation { Id = "chal_above", Position = new Vec3(25f, 0f, 5f), Rarity = TokenRarity.Common, EstimatedValue = 701f };
+            var coordAbove = new RouteCoordinator(new TestTokenRepo(new[] { incumbent, chalAbove }), _ranker, new FakePathfinder(), grid);
+            var decAbove = coordAbove.Coordinate(player, ranking, coordConfig, "m_curr");
+            Assert.That(decAbove.SelectedTarget!.Id, Is.EqualTo("chal_above"), $"Weight {totalWeight}: Challenger above scaled margin MUST dethrone");
+        }
+
+        [Test]
+        public void F02_PositiveInfinityCommitOverrideMargin_UnconditionallyRetainsIncumbent()
+        {
+            var grid = new TestNavGrid(new[] { ".........." });
+            var player = new PlayerState { Position = new Vec3(5f, 0f, 5f), Speed = 5f };
+            var incumbent = new TokenLocation { Id = "m_curr", Position = new Vec3(15f, 0f, 5f), Rarity = TokenRarity.Common, EstimatedValue = 10f };
+            var challenger = new TokenLocation { Id = "chal_max", Position = new Vec3(25f, 0f, 5f), Rarity = TokenRarity.Legendary, EstimatedValue = 1000f };
+
+            var coordConfig = new CoordinationConfig(commitRadius: 15f, commitOverrideMargin: float.PositiveInfinity);
+            var coordinator = new RouteCoordinator(new TestTokenRepo(new[] { incumbent, challenger }), _ranker, new FakePathfinder(), grid);
+            var decision = coordinator.Coordinate(player, _rankingConfig, coordConfig, "m_curr");
+
+            Assert.That(decision.SelectedTarget!.Id, Is.EqualTo("m_curr"), "Unconditional retention (+Infinity) must never be dethroned");
+            Assert.That(decision.PathSearchesExecuted, Is.EqualTo(1), "Only incumbent search executes when margin is +Infinity");
+            Assert.That(decision.TerminationReason, Is.EqualTo(CoordinationTerminationReason.OptimalFound));
+        }
+
+        public sealed class ScriptedRankerForSlackMutant : ITargetRanker
+        {
+            private readonly ITargetRanker _inner;
+            public ScriptedRankerForSlackMutant(ITargetRanker inner) => _inner = inner;
+
+            public TargetEvaluationResult? Evaluate(TokenLocation candidate, PlayerState player, RankingConfig config, string? currentTargetId, float? verifiedPathCost = null, float lineCostPerMeter = 1)
+            {
+                var result = _inner.Evaluate(candidate, player, config, currentTargetId, verifiedPathCost, lineCostPerMeter);
+                if (result == null) return null;
+
+                // When evaluating straight-line upper bound (verifiedPathCost == null), subtract 1 micro to simulate 1-micro error
+                if (!verifiedPathCost.HasValue && candidate.Id == "chal")
+                {
+                    long simulatedUpperMicros = result.ScoreMicros - 1L;
+                    return new TargetEvaluationResult(
+                        result.Token,
+                        simulatedUpperMicros / 1e6,
+                        simulatedUpperMicros,
+                        result.NormalizedValue,
+                        result.NormalizedTime,
+                        result.NormalizedRarity,
+                        result.NormalizedHysteresis,
+                        result.EstimatedTravelSeconds,
+                        result.PathCostWorldUnits,
+                        result.IsPathVerified);
+                }
+
+                return result;
+            }
+
+            public IReadOnlyList<TargetEvaluationResult> RankCandidates(IReadOnlyList<TokenLocation> candidates, PlayerState player, RankingConfig config, string? currentTargetId, IReadOnlyDictionary<string, float>? verifiedPathCosts = null, float lineCostPerMeter = 1)
+            {
+                var list = new List<TargetEvaluationResult>();
+                for (int i = 0; i < candidates.Count; i++)
+                {
+                    float? cost = (verifiedPathCosts != null && verifiedPathCosts.TryGetValue(candidates[i].Id, out var c)) ? c : null;
+                    var eval = Evaluate(candidates[i], player, config, currentTargetId, cost, lineCostPerMeter);
+                    if (eval != null) list.Add(eval);
+                }
+                list.Sort((a, b) =>
+                {
+                    int cmp = b.ScoreMicros.CompareTo(a.ScoreMicros);
+                    if (cmp != 0) return cmp;
+                    return StringComparer.Ordinal.Compare(a.Token.Id, b.Token.Id);
+                });
+                return list;
+            }
+        }
+
+        [Test]
+        public void F03_Mutant1_SlackPreventsPruningOnOneMicroDiscrepancy()
+        {
+            var grid = new TestNavGrid(new[] { ".........." });
+            var player = new PlayerState { Position = new Vec3(5f, 0f, 5f), Speed = 5f };
+            // Incumbent "inc" and challenger "chal" with identical base values
+            var inc = new TokenLocation { Id = "inc", Position = new Vec3(15f, 0f, 5f), Rarity = TokenRarity.Common, EstimatedValue = 500f };
+            var chal = new TokenLocation { Id = "chal", Position = new Vec3(25f, 0f, 5f), Rarity = TokenRarity.Common, EstimatedValue = 500f };
+
+            var ranker = new ScriptedRankerForSlackMutant(_ranker);
+            var pureValue = new RankingConfig(weightValue: 1.0f, weightTime: 0f, weightRarity: 0f, weightHysteresis: 0f, valueScale: 1000f);
+
+            // With slack = 2L: adjusted upper = (500,000 - 1) + 2 = 500,001 > 500,000 -> chal is NOT pruned
+            var coordWithSlack = new RouteCoordinator(new TestTokenRepo(new[] { inc, chal }), ranker, new FakePathfinder(), grid);
+            var decWithSlack = coordWithSlack.Coordinate(player, pureValue, new CoordinationConfig(commitRadius: 0f, upperBoundSlackMicros: 2L), null);
+            Assert.That(decWithSlack.PathSearchesExecuted, Is.EqualTo(2), "With UpperBoundSlackMicros = 2, candidate must NOT be pruned");
+
+            // With slack = 0L: upper = 500,000 - 1 = 499,999 < 500,000 -> chal IS wrongly pruned (mutant killed)
+            var coordNoSlack = new RouteCoordinator(new TestTokenRepo(new[] { inc, chal }), ranker, new FakePathfinder(), grid);
+            var decNoSlack = coordNoSlack.Coordinate(player, pureValue, new CoordinationConfig(commitRadius: 0f, upperBoundSlackMicros: 0L), null);
+            Assert.That(decNoSlack.PathSearchesExecuted, Is.EqualTo(1), "With UpperBoundSlackMicros = 0, candidate with 1-micro discrepancy is pruned");
+        }
+
+        [Test]
+        public void F04_Mutant2_CoordinatorUsesWorldPathCostNotRawGridCost_NonCellCenterCoordinates()
+        {
+            var grid = new TestNavGrid(new[]
+            {
+                "..........",
+                "..........",
+                "..........",
+                ".........."
+            }, cellSize: 10.0f);
+            var pathfinder = new AStarPathfinder(grid);
+
+            // Non-cell-center positions:
+            // Player at (11, 11) inside cell (1, 1), cell center is (15, 15)
+            // Token at (39, 11) inside cell (3, 1), cell center is (35, 15)
+            var player = new PlayerState { Position = new Vec3(11f, 0f, 11f), Speed = 5f };
+            var token = new TokenLocation { Id = "token1", Position = new Vec3(39f, 0f, 11f), Rarity = TokenRarity.Common, EstimatedValue = 100f };
+
+            var repo = new TestTokenRepo(new[] { token });
+            var coordinator = new RouteCoordinator(repo, _ranker, pathfinder, grid);
+            var decision = coordinator.Coordinate(player, _rankingConfig, _coordinationConfig, null);
+
+            var startCell = grid.WorldToGrid(player.Position);
+            var goalCell = grid.WorldToGrid(token.Position);
+            var pathResult = pathfinder.FindPath(startCell, goalCell);
+            float expectedWorldCost = WorldPathCost.Compute(grid, pathResult, player.Position, startCell, token.Position);
+
+            Assert.That(decision.SelectedTarget, Is.Not.Null);
+            Assert.That(decision.Evaluation!.PathCostWorldUnits, Is.EqualTo(expectedWorldCost), "Coordinator must evaluate using WorldPathCost.Compute");
+            Assert.That(decision.Evaluation.PathCostWorldUnits, Is.Not.EqualTo(pathResult.GridCost), "Path cost in world units must differ from raw GridCost for non-cell-center endpoints");
+        }
+
+        [Test]
+        public void F05_Mutant4_CurrentTargetInsideCommitRadiusWalledOff_ReportedUnreachableAndFallsBack()
+        {
+            var grid = new TestNavGrid(new[]
+            {
+                "..........",
+                "..........",
+                "..###.....",
+                "..#.#.....",
+                "..###.....",
+                ".........."
+            }, cellSize: 10.0f);
+            var player = new PlayerState { Position = new Vec3(35f, 0f, 15f), Speed = 5f }; // cell (3, 1)
+            var walledToken = new TokenLocation { Id = "curr_walled", Position = new Vec3(35f, 0f, 35f), Rarity = TokenRarity.Common, EstimatedValue = 200f }; // cell (3, 3) inside walls
+            var alternative = new TokenLocation { Id = "alt_reachable", Position = new Vec3(85f, 0f, 45f), Rarity = TokenRarity.Common, EstimatedValue = 100f };
+
+            var pathfinder = new AStarPathfinder(grid);
+            var repo = new TestTokenRepo(new[] { walledToken, alternative });
+            var coordinator = new RouteCoordinator(repo, _ranker, pathfinder, grid);
+
+            var decision = coordinator.Coordinate(player, _rankingConfig, new CoordinationConfig(commitRadius: 25f), "curr_walled");
+
+            Assert.That(decision.DiagnosticStatusByCandidateId["curr_walled"], Is.EqualTo(PathStatus.Unreachable), "Walled-off current target must be diagnosed as Unreachable");
+            Assert.That(decision.SkippedCandidateIds, Contains.Item("curr_walled"), "Walled-off current target must be skipped");
+            Assert.That(decision.SelectedTarget, Is.Not.Null);
+            Assert.That(decision.SelectedTarget!.Id, Is.EqualTo("alt_reachable"), "Coordinator must fall back to reachable candidate");
+        }
+
+        [Test]
+        public void F06_Mutant6_SnapTieBreak_CloserCellSelected()
+        {
+            // Grid 3x3: center (1, 1) is blocked.
+            // Player is at continuous position (11.0f, 0f, 15.0f), which is inside blocked cell (1, 1).
+            // Cell (0, 1) center is (5.0, 15.0). Distance from player is |11 - 5| = 6.0m.
+            // Cell (2, 1) center is (25.0, 15.0). Distance from player is |25 - 11| = 14.0m.
+            var grid = new TestNavGrid(new[]
+            {
+                "###",
+                ".#.", // (0, 1) walkable, (1, 1) blocked, (2, 1) walkable
+                "###"
+            }, cellSize: 10f);
+
+            var player = new PlayerState { Position = new Vec3(11.0f, 0f, 15.0f), Speed = 5f };
+            var tokenIn01 = new TokenLocation { Id = "t01", Position = new Vec3(5f, 0f, 15f), Rarity = TokenRarity.Common, EstimatedValue = 100f };
+
+            var pathfinder = new FakePathfinder();
+            var coordinator = new RouteCoordinator(new TestTokenRepo(new[] { tokenIn01 }), _ranker, pathfinder, grid);
+            var decision = coordinator.Coordinate(player, _rankingConfig, _coordinationConfig, null);
+
+            Assert.That(decision.PlayerSnappedToWalkable, Is.True);
+            Assert.That(pathfinder.Calls.Count, Is.GreaterThan(0));
+            var searchStart = pathfinder.Calls[0].Start;
+            Assert.That(searchStart, Is.EqualTo(new GridPosition(0, 1)), "Closer walkable cell (0, 1) must be chosen for snapping");
+        }
+
+        [Test]
+        public void F07_Mutant8_MaxPathSearches1WithCurrentTargetInsideCommitRadius_SearchBudgetReached()
+        {
+            var grid = new TestNavGrid(new[] { "..........", ".........." });
+            var player = new PlayerState { Position = new Vec3(5f, 0f, 5f), Speed = 5f };
+            var currentToken = new TokenLocation { Id = "curr", Position = new Vec3(15f, 0f, 5f), Rarity = TokenRarity.Common, EstimatedValue = 50f };
+            // Candidate 2 has value 500 so its upper bound is well above current target's score + margin
+            var candidate2 = new TokenLocation { Id = "c2", Position = new Vec3(25f, 0f, 5f), Rarity = TokenRarity.Common, EstimatedValue = 500f };
+
+            var pureValue = new RankingConfig(weightValue: 1.0f, weightTime: 0f, weightRarity: 0f, weightHysteresis: 0f, valueScale: 1000f);
+            var repo = new TestTokenRepo(new[] { currentToken, candidate2 });
+            var coordinator = new RouteCoordinator(repo, _ranker, new FakePathfinder(), grid);
+            var decision = coordinator.Coordinate(player, pureValue, new CoordinationConfig(commitRadius: 15f, commitOverrideMargin: 0.10f, maxPathSearches: 1), "curr");
+
+            Assert.That(decision.PathSearchesExecuted, Is.EqualTo(1), "Only 1 path search allowed when MaxPathSearches = 1");
+            Assert.That(decision.TerminationReason, Is.EqualTo(CoordinationTerminationReason.SearchBudgetReached), "Search budget reached must be reported when unpruned candidates remain");
+            Assert.That(decision.SelectedTarget!.Id, Is.EqualTo("curr"));
+        }
+
+        #endregion
 
         [Test]
         public void C15_100RunDeterminism_DecisionsAndDiagnosticsAreIdenticalAcross100Runs()

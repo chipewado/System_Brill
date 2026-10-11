@@ -18,12 +18,5 @@ namespace Assistant.Core.Coordination
             CoordinationConfig coordination,
             string? currentTargetId);
 
-        /// <summary>
-        /// Overload using default CoordinationConfig.
-        /// </summary>
-        TargetDecision Coordinate(
-            PlayerState player,
-            RankingConfig ranking,
-            string? currentTargetId);
     }
 }

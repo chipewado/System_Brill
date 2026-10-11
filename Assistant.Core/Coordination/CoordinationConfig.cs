@@ -11,6 +11,12 @@ namespace Assistant.Core.Coordination
     {
         public RankingConfig Ranking { get; }
         public float CommitRadius { get; }
+
+        /// <summary>
+        /// Commit override margin expressed as a fraction of the maximum possible score (scaled by total ranking weight sum).
+        /// A competing candidate must exceed the incumbent's score by at least this margin to dethrone it inside CommitRadius.
+        /// +Infinity indicates unconditional retention inside CommitRadius.
+        /// </summary>
         public float CommitOverrideMargin { get; }
         public int MaxPathSearches { get; }
 

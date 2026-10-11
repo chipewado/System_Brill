@@ -33,13 +33,6 @@ namespace Assistant.Core.Coordination
             _grid = grid ?? throw new ArgumentNullException(nameof(grid));
         }
 
-        public TargetDecision Coordinate(
-            PlayerState player,
-            RankingConfig ranking,
-            string? currentTargetId)
-        {
-            return Coordinate(player, ranking, new CoordinationConfig(), currentTargetId);
-        }
 
         public TargetDecision Coordinate(
             PlayerState player,
@@ -233,8 +226,11 @@ namespace Assistant.Core.Coordination
                         }
                         else
                         {
-                            long marginMicros = (long)Math.Floor((double)coordination.CommitOverrideMargin * 1_000_000.0 + 0.5);
-                            effectiveThresholdMicros = bestEval.ScoreMicros + marginMicros;
+                            double weightSum = (double)ranking.WeightValue + (double)ranking.WeightTime + (double)ranking.WeightRarity + (double)ranking.WeightHysteresis;
+                            long marginMicros = (long)Math.Floor((double)coordination.CommitOverrideMargin * weightSum * 1_000_000.0 + 0.5);
+                            effectiveThresholdMicros = bestEval.ScoreMicros > long.MaxValue - marginMicros
+                                ? long.MaxValue
+                                : bestEval.ScoreMicros + marginMicros;
                         }
                     }
                     else
@@ -244,8 +240,25 @@ namespace Assistant.Core.Coordination
 
                     // Branch-and-bound slack-adjusted pruning check
                     long adjustedUpperMicros = candidateEval.ScoreMicros + coordination.UpperBoundSlackMicros;
-                    if (adjustedUpperMicros < effectiveThresholdMicros ||
-                       (adjustedUpperMicros == effectiveThresholdMicros && StringComparer.Ordinal.Compare(candidateEval.Token.Id, bestToken!.Id) > 0))
+                    bool shouldPrune;
+                    if (isCurrentTargetRetainedInsideCommit)
+                    {
+                        // Inside commit radius, any candidate whose score reaches or exceeds the threshold
+                        // can dethrone the incumbent regardless of candidate ID ordering.
+                        // Therefore, equality with effectiveThresholdMicros must not be pruned based on ID.
+                        // Note: with slack > 0, the tie branch only matters inside the sub-slack band.
+                        shouldPrune = adjustedUpperMicros < effectiveThresholdMicros;
+                    }
+                    else
+                    {
+                        // Outside commit radius, standard tie-break applies: equal scores only replace
+                        // the incumbent if the candidate ID sorts strictly before the incumbent ID.
+                        // Note: with slack > 0, the tie branch only matters inside the sub-slack band.
+                        shouldPrune = adjustedUpperMicros < effectiveThresholdMicros ||
+                           (adjustedUpperMicros == effectiveThresholdMicros && StringComparer.Ordinal.Compare(candidateEval.Token.Id, bestToken!.Id) > 0);
+                    }
+
+                    if (shouldPrune)
                     {
                         stoppedByPruning = true;
                         break;
@@ -296,10 +309,16 @@ namespace Assistant.Core.Coordination
                     }
                     else if (isCurrentTargetRetainedInsideCommit)
                     {
-                        long marginMicros = float.IsPositiveInfinity(coordination.CommitOverrideMargin)
+                        if (float.IsPositiveInfinity(coordination.CommitOverrideMargin))
+                        {
+                            continue;
+                        }
+
+                        double weightSum = (double)ranking.WeightValue + (double)ranking.WeightTime + (double)ranking.WeightRarity + (double)ranking.WeightHysteresis;
+                        long marginMicros = (long)Math.Floor((double)coordination.CommitOverrideMargin * weightSum * 1_000_000.0 + 0.5);
+                        long thresholdMicros = bestEval.ScoreMicros > long.MaxValue - marginMicros
                             ? long.MaxValue
-                            : (long)Math.Floor((double)coordination.CommitOverrideMargin * 1_000_000.0 + 0.5);
-                        long thresholdMicros = marginMicros == long.MaxValue ? long.MaxValue : bestEval.ScoreMicros + marginMicros;
+                            : bestEval.ScoreMicros + marginMicros;
 
                         if (verifiedEval.ScoreMicros >= thresholdMicros)
                         {

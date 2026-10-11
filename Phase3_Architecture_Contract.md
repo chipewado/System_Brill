@@ -383,7 +383,8 @@ namespace Assistant.Core.Coordination
     {
         TargetDecision Coordinate(
             PlayerState player,
-            RankingConfig config,
+            RankingConfig ranking,
+            CoordinationConfig coordination,
             string? currentTargetId);
     }
 }
@@ -468,11 +469,15 @@ Let the start cell be $c_{\text{start}} = \text{WorldToGrid}(p)$ and goal cell b
 2. **Determinism Statement**:
    The determinism contract is explicitly guaranteed for **"same build, same runtime, same inputs"**. Integer micro-scores provide exact integer comparisons within one build and prevent floating-point representation ambiguity; they do not claim cross-runtime bit identity across different architectures without fixed-point arithmetic.
 3. **Slack-Adjusted Pruning Invariant (`UpperBoundSlack = 1e-6` / `UpperBoundSlackMicros = 2L`)**:
-   A candidate $C$ with straight-line upper bound $\text{Score}_{\text{upperBound}}(C)$ can be safely pruned against the currently verified best candidate $B$ (with score $\text{Score}_{\text{verified}}(B)$) **if and only if**:
-   $$\text{Score}_{\text{upperBound}}(C) + \text{UpperBoundSlack} < \text{Score}_{\text{verified}}(B)$$
-   $$\textbf{OR}$$
-   $$|\left(\text{Score}_{\text{upperBound}}(C) + \text{UpperBoundSlack}\right) - \text{Score}_{\text{verified}}(B)| \le 10^{-9} \quad \text{AND} \quad \text{StringComparer.Ordinal.Compare}(C.\text{Id}, B.\text{Id}) > 0$$
-   *Justification*: The slack $\epsilon = 10^{-6}$ prevents floating-point inaccuracy from ever pruning a candidate that could match or marginally beat the best verified candidate. If the slack-adjusted upper bound ties the best score, candidate $C$ is pruned if and only if its ID is lexicographically greater than $B$'s ID.
+   A candidate $C$ with straight-line upper bound $\text{Score}_{\text{upperBound}}(C)$ and adjusted upper bound $\text{AdjustedUpper} = \text{ScoreMicros}_{\text{upperBound}}(C) + \text{UpperBoundSlackMicros}$ is evaluated against the effective threshold $\text{Threshold}$:
+   - **Outside Commit Radius** (or when incumbent was not retained):
+     $\text{Threshold} = \text{ScoreMicros}_{\text{verified}}(B)$. Candidate $C$ is pruned if and only if:
+     $$\text{AdjustedUpper} < \text{Threshold} \quad \textbf{OR} \quad (\text{AdjustedUpper} == \text{Threshold} \ \land \ \text{StringComparer.Ordinal.Compare}(C.\text{Id}, B.\text{Id}) > 0)$$
+   - **Inside Commit Radius** (incumbent retained under commit policy):
+     $\text{Threshold} = \text{ScoreMicros}_{\text{verified}}(\text{Current}) + \text{ScaledMarginMicros}$.
+     Because any candidate whose verified score reaches or exceeds $\text{Threshold}$ dethrones the incumbent regardless of ID ordering, equality with $\text{Threshold}$ must not be pruned based on ID. Candidate $C$ is pruned if and only if:
+     $$\text{AdjustedUpper} < \text{Threshold}$$
+   *Justification*: The slack $\epsilon = 2\mu$ guarantees admissibility against tiny floating-point variance. With slack $> 0$, the tie branch only matters inside the sub-slack band.
 
 ### 3.4 CommitRadius Semantics & Replacement Threshold
 
@@ -481,27 +486,29 @@ Let the start cell be $c_{\text{start}} = \text{WorldToGrid}(p)$ and goal cell b
 
 2. **Single Unambiguous Replacement Condition**:
    When `currentTargetId` is set, available in the repository, within continuous 2D distance $d_{2D}(p, \text{Current.Position}) \le \text{CommitRadius}$, and verified reachable (`PathStatus.Success`):
+   $\text{CommitOverrideMargin}$ is defined as a fraction of the maximum theoretical score, scaled by the total ranking weight sum $W = \sum w_i$:
+   $$\text{ScaledMarginMicros} = \lfloor \text{CommitOverrideMargin} \cdot W \cdot 10^6 + 0.5 \rfloor$$
    A path-verified challenger $C$ overrides / replaces the current target if and only if:
-   $$\text{Score}_{\text{verified}}(C) \ge \text{Score}_{\text{verified}}(\text{Current}) + \text{config.CommitOverrideMargin}$$
+   $$\text{ScoreMicros}_{\text{verified}}(C) \ge \text{ScoreMicros}_{\text{verified}}(\text{Current}) + \text{ScaledMarginMicros}$$
 
 3. **Hysteresis Accounting (Strict Single-Count Guarantee)**:
    - For the current target, $\text{Score}_{\text{verified}}(\text{Current})$ is evaluated with `currentTargetId` matching its ID, so it includes the hysteresis bonus:
      $$\text{Score}_{\text{verified}}(\text{Current}) = \text{BaseScore}(\text{Current}) + w_h \cdot 1.0$$
    - For challenger $C$, $\text{Score}_{\text{verified}}(C)$ has $s_{\text{hyst}} = 0$, so $\text{Score}_{\text{verified}}(C) = \text{BaseScore}(C)$.
    - In terms of intrinsic base scores (scores without hysteresis):
-     $$\text{BaseScore}(C) \ge \text{BaseScore}(\text{Current}) + \text{HysteresisBonus} + \text{config.CommitOverrideMargin}$$
-   - Comparing final evaluated scores ($\text{Score}_{\text{verified}}(C) \ge \text{Score}_{\text{verified}}(\text{Current}) + \text{CommitOverrideMargin}$) guarantees that the hysteresis bonus is **counted exactly once**. Implementations must never add hysteresis a second time.
+     $$\text{BaseScore}(C) \ge \text{BaseScore}(\text{Current}) + \text{HysteresisBonus} + \text{ScaledMargin}$$
+   - Comparing final evaluated scores ($\text{Score}_{\text{verified}}(C) \ge \text{Score}_{\text{verified}}(\text{Current}) + \text{ScaledMargin}$) guarantees that the hysteresis bonus is **counted exactly once**. Implementations must never add hysteresis a second time.
 
 4. **Edge Behaviors and Boundary Rules**:
    - **Zero Margin (`CommitOverrideMargin == 0.0f`)**:
      Condition reduces to $\text{Score}_{\text{verified}}(C) \ge \text{Score}_{\text{verified}}(\text{Current})$. Challenger replaces Current if it overcomes Current's hysteresis bonus.
-   - **Equal Scores / Exact Boundary (`Score(C) == Score(Current) + Margin`)**:
+   - **Equal Scores / Exact Boundary (`Score(C) == Score(Current) + ScaledMargin`)**:
      Evaluated with strict $\ge$. If challenger's verified score matches the threshold exactly, replacement triggers.
    - **Ordinal ID Ties**:
-     Current target is the incumbent. Challenger only replaces Current if $\text{Score}_{\text{verified}}(C) \ge \text{Score}_{\text{verified}}(\text{Current}) + \text{Margin}$. If `Margin > 0` and $\text{Score}_{\text{verified}}(C) < \text{Score}_{\text{verified}}(\text{Current}) + \text{Margin}$, no tie-breaking occurs; Current is retained regardless of whether $C$'s ID is lexicographically smaller than Current's ID.
+     Current target is the incumbent. Challenger only replaces Current if $\text{Score}_{\text{verified}}(C) \ge \text{Score}_{\text{verified}}(\text{Current}) + \text{ScaledMargin}$. If `Margin > 0` and $\text{Score}_{\text{verified}}(C) < \text{Score}_{\text{verified}}(\text{Current}) + \text{ScaledMargin}$, no tie-breaking occurs; Current is retained regardless of whether $C$'s ID is lexicographically smaller than Current's ID.
      If multiple challengers exceed the threshold, ties between challengers are broken by standard ranking rules: higher verified score, then lexicographically smaller ID (`StringComparer.Ordinal.Compare(C1.Id, C2.Id) < 0`).
    - **Positive-Infinity Margin (`CommitOverrideMargin == float.PositiveInfinity`)**:
-     $\text{Score}_{\text{verified}}(\text{Current}) + \infty = \infty$. Since all scores $\le 1.0$, no finite challenger can ever satisfy the condition. Current target is retained unconditionally after verifying reachability with a single search.
+     Evaluated unconditionally BEFORE any arithmetic or branch-and-bound searches: if the current target is verified reachable, it is immediately selected with `OptimalFound` and searchesRun = 1.
    - **Reachability Verification Requirement**:
      The commit-radius fast path **MUST** path-verify the current target first via `_pathfinder.FindPath(player.Position, currentToken.Position)`. If the path search returns `Unreachable`, `InvalidGoal`, or `SearchBudgetExceeded`, commitment is immediately voided. Current target is **not** retained, its status is recorded in diagnostics, and the coordinator falls back to standard candidate ranking and branch-and-bound.
 
