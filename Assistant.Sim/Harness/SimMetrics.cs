@@ -20,5 +20,9 @@ namespace Assistant.Sim.Harness
         public double CoordinateWallTimeMs { get; set; } // Informational only, never asserted
         public double TotalSimTime { get; set; }
         public int TotalReplans { get; set; }
+        public float DistanceWalked { get; set; }
+        public double IdleTime { get; set; }
+        public double? TimeToFirstCollection => CollectionTimes.Count > 0 ? (double?)CollectionTimes[0] : null;
+        public double ValuePerSecond => TotalSimTime > 0 ? (double)TotalValue / TotalSimTime : 0.0;
     }
 }

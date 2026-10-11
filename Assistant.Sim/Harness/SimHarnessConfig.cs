@@ -32,6 +32,8 @@ namespace Assistant.Sim.Harness
         public List<TokenLocation>? CustomTokens { get; set; }
         public DateTimeOffset StartTime { get; set; } = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
         public bool StopWhenNoValidTargets { get; set; } = true;
+        public ReplanPolicy ReplanPolicy { get; set; } = ReplanPolicy.CadenceAndEvents;
+        public FollowerWaypointPolicy FollowerPolicy { get; set; } = FollowerWaypointPolicy.KeepFirst;
 
         /// <summary>
         /// Optional per-tick hook for tests (e.g. wall placement or invariant assertions).

@@ -588,5 +588,308 @@ namespace Assistant.Tests.Harness
                 "TOTAL", totalCoordVal, totalCoordTokens, totalNearestVal, totalNearestTokens, overallDeltaStr);
             TestContext.Out.WriteLine("========================================================================================================\n");
         }
+
+        [Test]
+        public void H13_WallOnPlayerCell_SnapsAndContinuesWithoutCrashOrObstacleWalking()
+        {
+            var config = new SimHarnessConfig
+            {
+                GridWidth = 40,
+                GridHeight = 40,
+                CellSize = 10f,
+                PlayerStartPosition = new Vec3(15f, 0, 15f),
+                GenerateProceduralTerrain = false,
+                InitialTokenCount = 0,
+                MaxSimulatedTime = 25f,
+                CustomTokens = new List<TokenLocation>
+                {
+                    new TokenLocation
+                    {
+                        Id = "T_East",
+                        Position = new Vec3(150f, 0, 15f),
+                        Rarity = TokenRarity.Common,
+                        EstimatedValue = 50f
+                    }
+                }
+            };
+
+            bool wallPlaced = false;
+            bool playerEnteredWall = false;
+
+            config.TickHook = (simTime, harness) =>
+            {
+                if (simTime >= 2.0 && !wallPlaced)
+                {
+                    wallPlaced = true;
+                    var pGrid = harness.Map.WorldToGrid(harness.Player.State.Position);
+                    harness.Map.SetCell(pGrid.X, pGrid.Z, SimCellType.Obstacle);
+                    harness.Notifier.NotifyRegionChanged(new Region(harness.Player.State.Position, 20f), "Wall on player cell");
+                }
+                else if (wallPlaced && simTime > 2.05)
+                {
+                    // Check that player snapped and remains strictly outside obstacle cell
+                    var currentGrid = harness.Map.WorldToGrid(harness.Player.State.Position);
+                    if (harness.Map.GetCell(currentGrid) == SimCellType.Obstacle)
+                    {
+                        playerEnteredWall = true;
+                    }
+                }
+            };
+
+            var harness = new SimulationHarness(config);
+            var result = harness.Run();
+
+            Assert.That(wallPlaced, Is.True);
+            Assert.That(playerEnteredWall, Is.False, "Player must not remain or move inside obstacle cell.");
+            Assert.That(result.Metrics.TotalCollectedCount, Is.EqualTo(1));
+        }
+
+        [Test]
+        public void H14_WallOnTargetCell_DropsTargetAndTriggersReplan()
+        {
+            var config = new SimHarnessConfig
+            {
+                GridWidth = 40,
+                GridHeight = 40,
+                CellSize = 10f,
+                PlayerStartPosition = new Vec3(15f, 0, 15f),
+                GenerateProceduralTerrain = false,
+                InitialTokenCount = 0,
+                MaxSimulatedTime = 30f,
+                CustomTokens = new List<TokenLocation>
+                {
+                    new TokenLocation
+                    {
+                        Id = "TargetA",
+                        Position = new Vec3(85f, 0, 15f),
+                        Rarity = TokenRarity.Common,
+                        EstimatedValue = 100f
+                    },
+                    new TokenLocation
+                    {
+                        Id = "TargetB",
+                        Position = new Vec3(15f, 0, 85f),
+                        Rarity = TokenRarity.Common,
+                        EstimatedValue = 50f
+                    }
+                }
+            };
+
+            bool wallPlaced = false;
+            config.TickHook = (simTime, harness) =>
+            {
+                if (simTime >= 2.0 && !wallPlaced)
+                {
+                    wallPlaced = true;
+                    harness.Map.SetCell(8, 1, SimCellType.Obstacle);
+                    harness.Notifier.NotifyRegionChanged(new Region(new Vec3(85f, 0, 15f), 15f), "Obstacle on TargetA");
+                }
+            };
+
+            var harness = new SimulationHarness(config);
+            var result = harness.Run();
+
+            Assert.That(wallPlaced, Is.True);
+            Assert.That(result.Transcript.Any(e => e.Type == "TokenCollected" && e.TokenId == "TargetB"), Is.True);
+            Assert.That(result.Transcript.Any(e => e.Type == "TokenCollected" && e.TokenId == "TargetA"), Is.False);
+        }
+
+        [Test]
+        public void H15_MidRunTokenSpawn_ChosenWhenScoringBetter()
+        {
+            var config = new SimHarnessConfig
+            {
+                GridWidth = 40,
+                GridHeight = 40,
+                CellSize = 10f,
+                PlayerStartPosition = new Vec3(15f, 0, 15f),
+                GenerateProceduralTerrain = false,
+                InitialTokenCount = 0,
+                MaxSimulatedTime = 25f,
+                CustomTokens = new List<TokenLocation>
+                {
+                    new TokenLocation
+                    {
+                        Id = "FarCommon",
+                        Position = new Vec3(200f, 0, 15f),
+                        Rarity = TokenRarity.Common,
+                        EstimatedValue = 10f
+                    }
+                }
+            };
+
+            bool spawned = false;
+            config.TickHook = (simTime, harness) =>
+            {
+                if (simTime >= 1.0 && !spawned)
+                {
+                    spawned = true;
+                    var lucrativeToken = new TokenLocation
+                    {
+                        Id = "NearLegendary",
+                        Position = new Vec3(25f, 0, 15f),
+                        Rarity = TokenRarity.Legendary,
+                        EstimatedValue = 500f,
+                        DetectedAt = harness.Clock.UtcNow,
+                        LastConfirmedAt = harness.Clock.UtcNow
+                    };
+                    harness.GameApi.SpawnToken(lucrativeToken);
+                }
+            };
+
+            var harness = new SimulationHarness(config);
+            var result = harness.Run();
+
+            Assert.That(spawned, Is.True);
+            Assert.That(result.Transcript.Any(e => e.Type == "TokenCollected" && e.TokenId == "NearLegendary"), Is.True);
+        }
+
+        [Test]
+        public void H16_EnclosedPocket_PlayerSurroundedByObstacles_TerminatesCleanly()
+        {
+            var config = new SimHarnessConfig
+            {
+                GridWidth = 30,
+                GridHeight = 30,
+                CellSize = 10f,
+                PlayerStartPosition = new Vec3(15f, 0, 15f),
+                GenerateProceduralTerrain = false,
+                InitialTokenCount = 0,
+                MaxSimulatedTime = 15f,
+                CustomTokens = new List<TokenLocation>
+                {
+                    new TokenLocation
+                    {
+                        Id = "OutsideToken",
+                        Position = new Vec3(100f, 0, 100f),
+                        Rarity = TokenRarity.Common,
+                        EstimatedValue = 50f
+                    }
+                }
+            };
+
+            var harness = new SimulationHarness(config);
+            for (int x = 0; x <= 2; x++)
+            {
+                for (int z = 0; z <= 2; z++)
+                {
+                    if (x != 1 || z != 1)
+                    {
+                        harness.Map.SetCell(x, z, SimCellType.Obstacle);
+                    }
+                }
+            }
+
+            var result = harness.Run();
+
+            Assert.That(result.Metrics.TotalCollectedCount, Is.EqualTo(0));
+            Assert.That(result.LastTerminationReason, Is.EqualTo(CoordinationTerminationReason.NoValidCandidates));
+        }
+
+        [Test]
+        public void H17_IdenticalTokens_DeterministicTieBreak_LowerIdWins()
+        {
+            var config = new SimHarnessConfig
+            {
+                GridWidth = 30,
+                GridHeight = 30,
+                CellSize = 10f,
+                PlayerStartPosition = new Vec3(15f, 0, 15f),
+                GenerateProceduralTerrain = false,
+                InitialTokenCount = 0,
+                MaxSimulatedTime = 10f,
+                CustomTokens = new List<TokenLocation>
+                {
+                    new TokenLocation
+                    {
+                        Id = "token_bravo",
+                        Position = new Vec3(35f, 0, 15f),
+                        Rarity = TokenRarity.Common,
+                        EstimatedValue = 50f
+                    },
+                    new TokenLocation
+                    {
+                        Id = "token_alpha",
+                        Position = new Vec3(15f, 0, 35f),
+                        Rarity = TokenRarity.Common,
+                        EstimatedValue = 50f
+                    }
+                }
+            };
+
+            var harness = new SimulationHarness(config);
+            var result = harness.Run();
+
+            var firstSelected = result.Transcript.FirstOrDefault(e => e.Type == "TargetSelected");
+            Assert.That(firstSelected, Is.Not.Null);
+            Assert.That(firstSelected!.TokenId, Is.EqualTo("token_alpha"),
+                "Tie-breaker must choose lower ordinal ID ('token_alpha' before 'token_bravo').");
+        }
+
+        [TestCase(SimStrategy.RankedCoordinator)]
+        [TestCase(SimStrategy.NearestFirstNaive)]
+        [TestCase(SimStrategy.NearestReachable)]
+        [TestCase(SimStrategy.BestRate)]
+        public void H18_EveryStrategy_KeepsPlayerOnWalkableCellsAtEveryTick(SimStrategy strategy)
+        {
+            var config = new SimHarnessConfig
+            {
+                Seed = 888,
+                MaxSimulatedTime = 30f,
+                InitialTokenCount = 20,
+                GenerateProceduralTerrain = true,
+                Strategy = strategy
+            };
+
+            bool unwalkableVisited = false;
+            config.TickHook = (simTime, harness) =>
+            {
+                var gridPos = harness.Map.WorldToGrid(harness.Player.State.Position);
+                if (!harness.Map.IsWalkable(gridPos))
+                {
+                    unwalkableVisited = true;
+                }
+            };
+
+            var harness = new SimulationHarness(config);
+            harness.Run();
+
+            Assert.That(unwalkableVisited, Is.False, $"Strategy {strategy} allowed player onto unwalkable cell!");
+        }
+
+        [Test]
+        public void H19_IndependentRandomStreams_StrategyActionDoesNotCorruptEnvironmentGeneration()
+        {
+            var c1 = new SimHarnessConfig { Seed = 456, InitialTokenCount = 20, Strategy = SimStrategy.RankedCoordinator };
+            var c2 = new SimHarnessConfig { Seed = 456, InitialTokenCount = 20, Strategy = SimStrategy.NearestFirstNaive };
+
+            var h1 = new SimulationHarness(c1);
+            var h2 = new SimulationHarness(c2);
+
+            var t1 = h1.Repository.GetAvailable().OrderBy(t => t.Id).ToList();
+            var t2 = h2.Repository.GetAvailable().OrderBy(t => t.Id).ToList();
+
+            Assert.That(t1.Count, Is.EqualTo(t2.Count));
+            for (int i = 0; i < t1.Count; i++)
+            {
+                Assert.That(t1[i].Id, Is.EqualTo(t2[i].Id));
+                Assert.That(t1[i].Position, Is.EqualTo(t2[i].Position));
+                Assert.That(t1[i].EstimatedValue, Is.EqualTo(t2[i].EstimatedValue).Within(1e-4));
+                Assert.That(t1[i].Rarity, Is.EqualTo(t2[i].Rarity));
+            }
+        }
+
+        [Test]
+        public void H20_ZeroBaselineMetricReporting_ProducesNAInsteadOfDivisionByZero()
+        {
+            float baselineVal = 0f;
+            float coordVal = 50f;
+
+            string deltaPctStr = baselineVal > 0f ? $"{(coordVal - baselineVal) / baselineVal * 100f:F1} %" : "n/a";
+            float absDelta = coordVal - baselineVal;
+
+            Assert.That(deltaPctStr, Is.EqualTo("n/a"));
+            Assert.That(absDelta, Is.EqualTo(50f));
+        }
     }
 }

@@ -5,7 +5,11 @@ namespace Assistant.Sim.Harness
     /// </summary>
     public enum SimStrategy
     {
-        RankedCoordinator,
-        NearestFirst
+        RankedCoordinator = 0,
+        NearestFirst = 1,
+        NearestFirstNaive = 1,
+        NearestReachable = 2,
+        BestRate = 3,
+        HighestValueFirst = 4
     }
 }
