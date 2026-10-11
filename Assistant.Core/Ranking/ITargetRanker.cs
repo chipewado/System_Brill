@@ -5,6 +5,14 @@ namespace Assistant.Core.Ranking
 {
     public interface ITargetRanker
     {
+        TargetEvaluationResult? Evaluate(
+            TokenLocation candidate,
+            PlayerState player,
+            RankingConfig config,
+            string? currentTargetId,
+            float? verifiedPathCost = null,
+            float lineCostPerMeter = 1.0f);
+
         IReadOnlyList<TargetEvaluationResult> RankCandidates(
             IReadOnlyList<TokenLocation> candidates,
             PlayerState player,
