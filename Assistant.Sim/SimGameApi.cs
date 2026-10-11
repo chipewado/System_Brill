@@ -151,6 +151,19 @@ namespace Assistant.Sim
             return false;
         }
 
+        /// <summary>
+        /// Simulation-only helper: removes a token from active tokens without firing TokenRemoved.
+        /// Used to test passive coverage-based TTL expiry.
+        /// </summary>
+        public bool SilentDespawnToken(string id)
+        {
+            if (string.IsNullOrWhiteSpace(id)) return false;
+            lock (_lock)
+            {
+                return _activeTokens.Remove(id);
+            }
+        }
+
         public void TriggerMapChanged(Region? affectedRegion = null, string reason = "Map layout changed")
         {
             MapChanged?.Invoke(new MapChangedEventArgs(affectedRegion, reason, _clock.UtcNow));

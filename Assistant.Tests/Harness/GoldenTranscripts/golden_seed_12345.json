@@ -1,0 +1,164 @@
+[
+  {
+    "SimTime": 0,
+    "Type": "Replan",
+    "TokenId": null,
+    "Value": 0
+  },
+  {
+    "SimTime": 0,
+    "Type": "TargetSelected",
+    "TokenId": "token_0025",
+    "Value": 14.332
+  },
+  {
+    "SimTime": 1,
+    "Type": "Replan",
+    "TokenId": "token_0025",
+    "Value": 0
+  },
+  {
+    "SimTime": 2,
+    "Type": "Replan",
+    "TokenId": "token_0025",
+    "Value": 0
+  },
+  {
+    "SimTime": 3,
+    "Type": "Replan",
+    "TokenId": "token_0025",
+    "Value": 0
+  },
+  {
+    "SimTime": 4,
+    "Type": "Replan",
+    "TokenId": "token_0025",
+    "Value": 0
+  },
+  {
+    "SimTime": 5,
+    "Type": "Replan",
+    "TokenId": "token_0025",
+    "Value": 0
+  },
+  {
+    "SimTime": 6,
+    "Type": "Replan",
+    "TokenId": "token_0025",
+    "Value": 0
+  },
+  {
+    "SimTime": 7,
+    "Type": "Replan",
+    "TokenId": "token_0025",
+    "Value": 0
+  },
+  {
+    "SimTime": 8,
+    "Type": "Replan",
+    "TokenId": "token_0025",
+    "Value": 0
+  },
+  {
+    "SimTime": 9,
+    "Type": "Replan",
+    "TokenId": "token_0025",
+    "Value": 0
+  },
+  {
+    "SimTime": 10,
+    "Type": "Replan",
+    "TokenId": "token_0025",
+    "Value": 0
+  },
+  {
+    "SimTime": 11,
+    "Type": "Replan",
+    "TokenId": "token_0025",
+    "Value": 0
+  },
+  {
+    "SimTime": 12,
+    "Type": "Replan",
+    "TokenId": "token_0025",
+    "Value": 0
+  },
+  {
+    "SimTime": 13,
+    "Type": "Replan",
+    "TokenId": "token_0025",
+    "Value": 0
+  },
+  {
+    "SimTime": 14,
+    "Type": "Replan",
+    "TokenId": "token_0025",
+    "Value": 0
+  },
+  {
+    "SimTime": 15,
+    "Type": "Replan",
+    "TokenId": "token_0025",
+    "Value": 0
+  },
+  {
+    "SimTime": 16,
+    "Type": "Replan",
+    "TokenId": "token_0025",
+    "Value": 0
+  },
+  {
+    "SimTime": 17,
+    "Type": "Replan",
+    "TokenId": "token_0025",
+    "Value": 0
+  },
+  {
+    "SimTime": 18,
+    "Type": "Replan",
+    "TokenId": "token_0025",
+    "Value": 0
+  },
+  {
+    "SimTime": 19,
+    "Type": "Replan",
+    "TokenId": "token_0025",
+    "Value": 0
+  },
+  {
+    "SimTime": 20,
+    "Type": "Replan",
+    "TokenId": "token_0025",
+    "Value": 0
+  },
+  {
+    "SimTime": 21,
+    "Type": "Replan",
+    "TokenId": "token_0025",
+    "Value": 0
+  },
+  {
+    "SimTime": 22,
+    "Type": "Replan",
+    "TokenId": "token_0025",
+    "Value": 0
+  },
+  {
+    "SimTime": 23,
+    "Type": "Replan",
+    "TokenId": "token_0025",
+    "Value": 0
+  },
+  {
+    "SimTime": 23.9,
+    "Type": "TokenCollected",
+    "TokenId": "token_0025",
+    "Value": 14.332
+  },
+  {
+    "SimTime": 23.9,
+    "Type": "Replan",
+    "TokenId": null,
+    "Value": 0
+  }
+]

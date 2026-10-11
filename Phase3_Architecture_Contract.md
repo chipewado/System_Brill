@@ -990,3 +990,64 @@ public TargetDecision Coordinate(
 ### Stage 3.4: Simulation Harness & End-to-End Verification
 - Integrate `RouteCoordinator` into `Assistant.Runner` and simulation test harness.
 - Confirm 0 build errors, 0 warnings, 100% passing tests, and zero real-game dependencies.
+
+---
+
+## 9. Stage 3.4 Simulator Harness & End-to-End Execution Specification
+
+### 9.1 Simulator Architecture & Strict Boundaries
+1. **Simulator-Only Boundary**:
+   The entire simulation loop, mock player movement, physics approximation, and path following exist solely within `Assistant.Sim` (`SimulationHarness`, `SimClock`, `SimPlayer`). Core components (`RouteCoordinator`, `AStarPathfinder`, `DefaultTargetRanker`, `TokenDiscoveryService`) remain strictly pure, state-insulated, and real-game free.
+2. **Deterministic Time (`SimClock : IClock`)**:
+   Time advancement is owned exclusively by `SimulationHarness.Run()` via `_clock.Advance(dt)`. No ambient wall-clock (`DateTime.UtcNow`) is queried during simulation ticks.
+3. **Multi-Targeting Compatibility**:
+   `Assistant.Sim` targets `netstandard2.1` and `net10.0` simultaneously. All simulation APIs remain compliant with both targets.
+
+### 9.2 Simulation Loop & Replan Cadence Invariants
+1. **Fixed Step Size**:
+   Simulation steps advance at fixed $\Delta t = 0.1\text{ s}$.
+2. **Replan Scheduling Invariants**:
+   - Step 0 initial replan ($t = 0.0\text{ s}$).
+   - Periodic cadence replan every $1.0\text{ s}$ ($\Delta t_{\text{replan}} \ge 1.0\text{ s}$).
+   - Event-driven replanning:
+     * Current target collected (`TokenCollected`).
+     * Current target removed or expired from repository (`TokensExpired` / TTL).
+     * Navigation map changed (`MapChanged`).
+     * Active path blocked by dynamic terrain alterations.
+   - **Invariant**: The coordinator is **never** invoked every frame. Total replan invocations over duration $T$ are strictly bounded by $\lfloor T / 1.0 \rfloor + 1 + N_{\text{events}}$.
+
+### 9.3 Path Following & Waypoint Semantics
+1. **Waypoint Invariant**:
+   When following `TargetDecision.SelectedPath.Waypoints`:
+   - Keep the first waypoint (`Waypoints[0]`, corresponding to the snapped start cell center).
+   - Intermediate waypoints follow grid cell centers.
+   - Replace the last waypoint (`Waypoints[^1]`) with the exact continuous token position $p_{\text{token}}$.
+2. **Token Collection**:
+   Collection is triggered when 2D Euclidean distance $d_{2D}(p_{\text{player}}, p_{\text{token}}) \le \text{CollectRadius}$ (default $1.0\text{ m}$).
+   On collection, `SimGameApi.CollectToken(id)` is called, raising `TokenCollected` and marking the token collected in `TokenRepository`.
+
+### 9.4 Event Transcript & Metrics Contract
+1. **Transcript Event Types**:
+   - `TargetSelected`: Logged on initial target assignment or after collection/invalidation.
+   - `TargetChanged`: Logged when an incumbent is dethroned by a challenger exceeding hysteresis + commit margin.
+   - `TokenCollected`: Logged upon successful pickup.
+   - `MapChanged`: Logged on dynamic map invalidation events.
+   - `Replan`: Logged on every replan cycle.
+2. **Stability (No-Chatter Guarantee)**:
+   In static environments, `TargetChanged` is never fired between selection and collection of an incumbent target.
+
+### 9.5 Baseline Strategy Comparison
+The harness provides a `NearestFirst` straight-line distance baseline. Comparative benchmark runs over fixed seeds demonstrate that the `RankedCoordinator` systematically outperforms the baseline in total BRIL value by optimizing for value, rarity, and traversal costs over greedy proximity.
+
+### 9.6 Harness Regression Test Suite (H-01 through H-11)
+- `H-01`: Determinism — identical seed produces identical transcript events.
+- `H-02`: Divergence — different seeds produce differing transcripts.
+- `H-03`: Golden Baseline — seed 12345 matches committed golden transcript.
+- `H-04`: No Chatter — static tokens only change target upon collection or invalidation.
+- `H-05`: Dynamic Rerouting — obstacle across route triggers `MapChanged`, replanning, obstacle avoidance, and successful collection without entering blocked cells.
+- `H-06`: Walkability Invariant — player cell is verified walkable at every tick.
+- `H-07`: Deterministic Order — small hand-derived scenario achieves exact sequence and total value.
+- `H-08`: Unreachable Isolation — walled-in token is never targeted, ending cleanly with `NoValidCandidates`.
+- `H-09`: Single-Collection Invariant — `TokenCollected` raised exactly once per token through pipeline.
+- `H-10`: Replan Frequency Bound — total replan calls do not exceed cadence plus event count.
+- `H-11`: Coverage-Based TTL Lifecycle — uncovered tokens survive past TTL; silently despawned covered tokens are evicted.

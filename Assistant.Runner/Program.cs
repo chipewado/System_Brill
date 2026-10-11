@@ -138,7 +138,73 @@ namespace Assistant.Runner
 
             Console.WriteLine($"    - Added 1,000 tokens in: {insertMs} ms");
             Console.WriteLine($"    - 1,000 nearest-token queries (top 10): {sw.ElapsedMilliseconds} ms (avg {queryAvgUs:F2} us/query)");
-            Console.WriteLine("\n[Phase 1 Execution Finished Successfully]");
+            Console.WriteLine("\n[Phase 1 Execution Finished Successfully]\n");
+
+            // 10. Stage 3.4 Simulation Harness Comparison (Ranked-Coordinator vs Nearest-First)
+            RunStage34HarnessComparison();
+        }
+
+        private static void RunStage34HarnessComparison()
+        {
+            Console.WriteLine("========================================================================================================");
+            Console.WriteLine("   STAGE 3.4 SIMULATION BENCHMARK: RANKED-COORDINATOR VS NEAREST-FIRST BASELINE (300s SIMULATED TIME)   ");
+            Console.WriteLine("========================================================================================================");
+            Console.WriteLine(" {0,6} | {1,20} | {2,15} | {3,19} | {4,17} | {5,15}",
+                "Seed", "Coord Value (BRIL)", "Coord Collected", "Nearest Value (BRIL)", "Nearest Collected", "Value Delta (%)");
+            Console.WriteLine("-------+----------------------+-----------------+---------------------+-------------------+----------------");
+
+            int[] seeds = new int[] { 101, 202, 303, 404, 505 };
+
+            float totalCoordVal = 0f;
+            float totalNearestVal = 0f;
+            int totalCoordTokens = 0;
+            int totalNearestTokens = 0;
+
+            foreach (var seed in seeds)
+            {
+                var coordConfig = new Assistant.Sim.Harness.SimHarnessConfig
+                {
+                    Seed = seed,
+                    MaxSimulatedTime = 300f,
+                    InitialTokenCount = 50,
+                    Strategy = Assistant.Sim.Harness.SimStrategy.RankedCoordinator
+                };
+                var coordHarness = new Assistant.Sim.Harness.SimulationHarness(coordConfig);
+                var coordResult = coordHarness.Run();
+
+                var nearestConfig = new Assistant.Sim.Harness.SimHarnessConfig
+                {
+                    Seed = seed,
+                    MaxSimulatedTime = 300f,
+                    InitialTokenCount = 50,
+                    Strategy = Assistant.Sim.Harness.SimStrategy.NearestFirst
+                };
+                var nearestHarness = new Assistant.Sim.Harness.SimulationHarness(nearestConfig);
+                var nearestResult = nearestHarness.Run();
+
+                float coordVal = coordResult.Metrics.TotalValue;
+                int coordTokens = coordResult.Metrics.TotalCollectedCount;
+                float nearestVal = nearestResult.Metrics.TotalValue;
+                int nearestTokens = nearestResult.Metrics.TotalCollectedCount;
+
+                totalCoordVal += coordVal;
+                totalNearestVal += nearestVal;
+                totalCoordTokens += coordTokens;
+                totalNearestTokens += nearestTokens;
+
+                float deltaPct = nearestVal > 0f ? ((coordVal - nearestVal) / nearestVal) * 100f : 0f;
+                string deltaStr = $"{(deltaPct >= 0f ? "+" : "")}{deltaPct:F1} %";
+
+                Console.WriteLine(" {0,6} | {1,20:F1} | {2,15} | {3,19:F1} | {4,17} | {5,15}",
+                    seed, coordVal, coordTokens, nearestVal, nearestTokens, deltaStr);
+            }
+
+            Console.WriteLine("-------+----------------------+-----------------+---------------------+-------------------+----------------");
+            float overallDeltaPct = totalNearestVal > 0f ? ((totalCoordVal - totalNearestVal) / totalNearestVal) * 100f : 0f;
+            string overallDeltaStr = $"{(overallDeltaPct >= 0f ? "+" : "")}{overallDeltaPct:F1} %";
+            Console.WriteLine(" {0,6} | {1,20:F1} | {2,15} | {3,19:F1} | {4,17} | {5,15}",
+                "TOTAL", totalCoordVal, totalCoordTokens, totalNearestVal, totalNearestTokens, overallDeltaStr);
+            Console.WriteLine("========================================================================================================\n");
         }
     }
 }
