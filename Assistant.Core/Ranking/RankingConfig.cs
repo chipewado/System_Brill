@@ -12,9 +12,6 @@ namespace Assistant.Core.Ranking
         public float ValueScale { get; }
         public float MaxTravelSeconds { get; }
         public float DefaultSpeed { get; }
-        public float CommitRadius { get; }
-        public float CommitOverrideMargin { get; }
-        public int MaxPathSearches { get; }
 
         public const double UpperBoundSlack = 1e-6;
 
@@ -25,25 +22,22 @@ namespace Assistant.Core.Ranking
             float weightHysteresis = 0.10f,
             float valueScale = 250f,
             float maxTravelSeconds = 120f,
-            float defaultSpeed = 5.0f,
-            float commitRadius = 15.0f,
-            float commitOverrideMargin = 0.30f,
-            int maxPathSearches = 8)
+            float defaultSpeed = 5.0f)
         {
             if (!float.IsFinite(weightValue) || weightValue < 0f) throw new ArgumentOutOfRangeException(nameof(weightValue));
             if (!float.IsFinite(weightTime) || weightTime < 0f) throw new ArgumentOutOfRangeException(nameof(weightTime));
             if (!float.IsFinite(weightRarity) || weightRarity < 0f) throw new ArgumentOutOfRangeException(nameof(weightRarity));
             if (!float.IsFinite(weightHysteresis) || weightHysteresis < 0f) throw new ArgumentOutOfRangeException(nameof(weightHysteresis));
-            if (weightValue + weightTime + weightRarity + weightHysteresis <= 0f)
-                throw new ArgumentException("At least one ranking weight must be strictly positive");
+
+            double totalWeight = (double)weightValue + (double)weightTime + (double)weightRarity + (double)weightHysteresis;
+            if (!double.IsFinite(totalWeight) || totalWeight <= 0.0)
+                throw new ArgumentException("At least one ranking weight must be strictly positive and total weight must be finite.");
+            if (totalWeight > 10.0)
+                throw new ArgumentOutOfRangeException(nameof(weightValue), "The sum of ranking weights must not exceed 10.0.");
 
             if (!float.IsFinite(valueScale) || valueScale <= 0f) throw new ArgumentOutOfRangeException(nameof(valueScale));
             if (!float.IsFinite(maxTravelSeconds) || maxTravelSeconds <= 0f) throw new ArgumentOutOfRangeException(nameof(maxTravelSeconds));
             if (!float.IsFinite(defaultSpeed) || defaultSpeed <= 0f) throw new ArgumentOutOfRangeException(nameof(defaultSpeed));
-            if (!float.IsFinite(commitRadius) || commitRadius < 0f) throw new ArgumentOutOfRangeException(nameof(commitRadius));
-            if (float.IsNaN(commitOverrideMargin) || commitOverrideMargin < 0f)
-                throw new ArgumentOutOfRangeException(nameof(commitOverrideMargin), "CommitOverrideMargin must be non-negative and not NaN (+Infinity is permitted for unconditional retention).");
-            if (maxPathSearches <= 0) throw new ArgumentOutOfRangeException(nameof(maxPathSearches));
 
             WeightValue = weightValue;
             WeightTime = weightTime;
@@ -52,9 +46,6 @@ namespace Assistant.Core.Ranking
             ValueScale = valueScale;
             MaxTravelSeconds = maxTravelSeconds;
             DefaultSpeed = defaultSpeed;
-            CommitRadius = commitRadius;
-            CommitOverrideMargin = commitOverrideMargin;
-            MaxPathSearches = maxPathSearches;
         }
     }
 }

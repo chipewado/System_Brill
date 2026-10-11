@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
 using Assistant.Core.Abstractions;
+using Assistant.Core.Coordination;
 using Assistant.Core.Data;
 using Assistant.Core.Ranking;
 using Assistant.Core.Visualization;
@@ -480,20 +481,20 @@ namespace Assistant.Tests.Ranking
             Assert.Throws<ArgumentOutOfRangeException>(() => new RankingConfig(defaultSpeed: -1f));
             Assert.Throws<ArgumentOutOfRangeException>(() => new RankingConfig(defaultSpeed: float.PositiveInfinity));
 
-            // 6. CommitRadius < 0 or non-finite
-            Assert.Throws<ArgumentOutOfRangeException>(() => new RankingConfig(commitRadius: -0.5f));
-            Assert.Throws<ArgumentOutOfRangeException>(() => new RankingConfig(commitRadius: float.PositiveInfinity));
-            Assert.DoesNotThrow(() => new RankingConfig(commitRadius: 0f));
+            // 6. CommitRadius < 0 or non-finite (in CoordinationConfig)
+            Assert.Throws<ArgumentOutOfRangeException>(() => new CoordinationConfig(commitRadius: -0.5f));
+            Assert.Throws<ArgumentOutOfRangeException>(() => new CoordinationConfig(commitRadius: float.PositiveInfinity));
+            Assert.DoesNotThrow(() => new CoordinationConfig(commitRadius: 0f));
 
-            // 7. CommitOverrideMargin: NaN or negative rejected, but +Infinity ACCEPTED
-            Assert.Throws<ArgumentOutOfRangeException>(() => new RankingConfig(commitOverrideMargin: -0.1f));
-            Assert.Throws<ArgumentOutOfRangeException>(() => new RankingConfig(commitOverrideMargin: float.NaN));
-            Assert.Throws<ArgumentOutOfRangeException>(() => new RankingConfig(commitOverrideMargin: float.NegativeInfinity));
-            Assert.DoesNotThrow(() => new RankingConfig(commitOverrideMargin: float.PositiveInfinity));
+            // 7. CommitOverrideMargin: NaN or negative rejected, but +Infinity ACCEPTED (in CoordinationConfig)
+            Assert.Throws<ArgumentOutOfRangeException>(() => new CoordinationConfig(commitOverrideMargin: -0.1f));
+            Assert.Throws<ArgumentOutOfRangeException>(() => new CoordinationConfig(commitOverrideMargin: float.NaN));
+            Assert.Throws<ArgumentOutOfRangeException>(() => new CoordinationConfig(commitOverrideMargin: float.NegativeInfinity));
+            Assert.DoesNotThrow(() => new CoordinationConfig(commitOverrideMargin: float.PositiveInfinity));
 
-            // 8. MaxPathSearches <= 0
-            Assert.Throws<ArgumentOutOfRangeException>(() => new RankingConfig(maxPathSearches: 0));
-            Assert.Throws<ArgumentOutOfRangeException>(() => new RankingConfig(maxPathSearches: -1));
+            // 8. MaxPathSearches <= 0 (in CoordinationConfig)
+            Assert.Throws<ArgumentOutOfRangeException>(() => new CoordinationConfig(maxPathSearches: 0));
+            Assert.Throws<ArgumentOutOfRangeException>(() => new CoordinationConfig(maxPathSearches: -1));
         }
 
         [Test]
