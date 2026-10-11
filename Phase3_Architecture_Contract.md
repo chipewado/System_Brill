@@ -212,6 +212,10 @@ namespace Assistant.Core.Ranking
         public float MaxTravelSeconds { get; }
         public float DefaultSpeed { get; }
         public float CommitRadius { get; }
+        /// <summary>
+        /// Margin in absolute score units required for a challenger to override an in-commit target.
+        /// Calibrated for a default total weight sum of 1.0.
+        /// </summary>
         public float CommitOverrideMargin { get; }
         public int MaxPathSearches { get; }
 
@@ -233,8 +237,12 @@ namespace Assistant.Core.Ranking
             if (!float.IsFinite(weightTime) || weightTime < 0) throw new ArgumentOutOfRangeException(nameof(weightTime));
             if (!float.IsFinite(weightRarity) || weightRarity < 0) throw new ArgumentOutOfRangeException(nameof(weightRarity));
             if (!float.IsFinite(weightHysteresis) || weightHysteresis < 0) throw new ArgumentOutOfRangeException(nameof(weightHysteresis));
-            if (weightValue + weightTime + weightRarity + weightHysteresis <= 0)
-                throw new ArgumentException("At least one ranking weight must be strictly positive");
+
+            double totalWeight = (double)weightValue + (double)weightTime + (double)weightRarity + (double)weightHysteresis;
+            if (!double.IsFinite(totalWeight) || totalWeight <= 0.0)
+                throw new ArgumentException("At least one ranking weight must be strictly positive and total weight must be finite.");
+            if (totalWeight > 10.0)
+                throw new ArgumentOutOfRangeException(nameof(weightValue), "The sum of ranking weights must not exceed 10.0.");
 
             if (!float.IsFinite(valueScale) || valueScale <= 0) throw new ArgumentOutOfRangeException(nameof(valueScale));
             if (!float.IsFinite(maxTravelSeconds) || maxTravelSeconds <= 0) throw new ArgumentOutOfRangeException(nameof(maxTravelSeconds));
@@ -261,10 +269,12 @@ namespace Assistant.Core.Ranking
     {
         public TokenLocation Token { get; }
         public double Score { get; }
+        public long ScoreMicros { get; }
         public double NormalizedValue { get; }
         public double NormalizedTime { get; }
         public double NormalizedRarity { get; }
-        public double HysteresisBonus { get; }
+        public double NormalizedHysteresis { get; }
+        public double HysteresisBonus => NormalizedHysteresis;
         public float EstimatedTravelSeconds { get; }
         public float PathCostWorldUnits { get; }
         public bool IsPathVerified { get; }
@@ -272,20 +282,22 @@ namespace Assistant.Core.Ranking
         public TargetEvaluationResult(
             TokenLocation token,
             double score,
+            long scoreMicros,
             double normalizedValue,
             double normalizedTime,
             double normalizedRarity,
-            double hysteresisBonus,
+            double normalizedHysteresis,
             float estimatedTravelSeconds,
             float pathCostWorldUnits,
             bool isPathVerified)
         {
             Token = token ?? throw new ArgumentNullException(nameof(token));
             Score = score;
+            ScoreMicros = scoreMicros;
             NormalizedValue = normalizedValue;
             NormalizedTime = normalizedTime;
             NormalizedRarity = normalizedRarity;
-            HysteresisBonus = hysteresisBonus;
+            NormalizedHysteresis = normalizedHysteresis;
             EstimatedTravelSeconds = estimatedTravelSeconds;
             PathCostWorldUnits = pathCostWorldUnits;
             IsPathVerified = isPathVerified;
@@ -294,6 +306,14 @@ namespace Assistant.Core.Ranking
 
     public interface ITargetRanker
     {
+        TargetEvaluationResult? Evaluate(
+            TokenLocation candidate,
+            PlayerState player,
+            RankingConfig config,
+            string? currentTargetId,
+            float? verifiedPathCost = null,
+            float lineCostPerMeter = 1.0f);
+
         IReadOnlyList<TargetEvaluationResult> RankCandidates(
             IReadOnlyList<TokenLocation> candidates,
             PlayerState player,
@@ -398,28 +418,29 @@ Let the start cell be $c_{\text{start}} = \text{WorldToGrid}(p)$ and goal cell b
    $$\text{GridCost} \ge \text{MinTraversalCost} \cdot \|\text{center}(c_{\text{start}}) - \text{center}(c_{\text{goal}})\|_2$$
 
 3. **Composite World Path Cost (`pathCostWorld`)**:
-   Because the player starts at world coordinate $p$ (inside $c_{\text{start}}$) and the token is located at world coordinate $t$ (inside $c_{\text{goal}}$), the complete world traversal cost must account for endpoint offsets:
+   Because the player starts at continuous world coordinate $p$ (inside or near $c_{\text{start}}$) and the token is located at continuous world coordinate $t$ (inside $c_{\text{goal}}$), the complete world traversal cost must account for endpoint connectors:
    $$\text{pathCostWorld} = \text{GridCost} + \text{MinTraversalCost} \cdot \left( d_{2D}(p, \text{center}(c_{\text{start}})) + d_{2D}(\text{center}(c_{\text{goal}}), t) \right)$$
-   *Snapping Rule*: If the player was snapped to a walkable cell $c_{\text{snapped}}$, the navigation search start cell is $c_{\text{start}} = c_{\text{snapped}}$, and $p$ used in the endpoint connector distance calculation is defined as $\text{center}(c_{\text{snapped}})$ itself (so $d_{2D}(p, \text{center}(c_{\text{start}})) = 0$).
+   *Snapping Rule*: If the player position $p$ was snapped to a walkable cell $c_{\text{snapped}}$, the navigation search start cell is $c_{\text{start}} = c_{\text{snapped}}$. Crucially, $p$ in $d_{2D}(p, \text{center}(c_{\text{start}}))$ remains the **actual player continuous world position** $p$. By preserving $p$, the Euclidean triangle inequality between $p$, $\text{center}(c_{\text{start}})$, $\text{center}(c_{\text{goal}})$, and $t$ holds strictly and unconditionally even across snapped cells.
    *Ranker Contract*: The ranker's `verifiedPathCosts` dictionary maps `token.Id` $\rightarrow \text{pathCostWorld}$.
 
 4. **Rigorous Proof that Stage Cost Lower Bound Holds**:
-   By the Euclidean triangle inequality:
+   By the Euclidean triangle inequality across the four consecutive points $p \rightarrow \text{center}(c_{\text{start}}) \rightarrow \text{center}(c_{\text{goal}}) \rightarrow t$:
    $$d_{2D}(p, t) \le d_{2D}(p, \text{center}(c_{\text{start}})) + \|\text{center}(c_{\text{start}}) - \text{center}(c_{\text{goal}})\|_2 + d_{2D}(\text{center}(c_{\text{goal}}), t)$$
    Multiplying through by $\text{MinTraversalCost} > 0$:
    $$\text{MinTraversalCost} \cdot d_{2D}(p, t) \le \text{MinTraversalCost} \cdot d_{2D}(p, \text{center}(c_{\text{start}})) + \text{MinTraversalCost} \cdot \|\text{center}(c_{\text{start}}) - \text{center}(c_{\text{goal}})\|_2 + \text{MinTraversalCost} \cdot d_{2D}(\text{center}(c_{\text{goal}}), t)$$
-   Substituting the inequality for $\text{GridCost}$:
+   Substituting the inequality $\text{GridCost} \ge \text{MinTraversalCost} \cdot \|\text{center}(c_{\text{start}}) - \text{center}(c_{\text{goal}})\|_2$:
    $$\text{MinTraversalCost} \cdot d_{2D}(p, t) \le \text{pathCostWorld}$$
-   **Theorem**: The quantity $C_{\text{lower}}(p, t) = \text{MinTraversalCost} \cdot d_{2D}(p, t)$ is a mathematically proven, valid lower bound on $\text{pathCostWorld}$ under all arbitrary continuous world positions.
+   **Theorem**: For any arbitrary continuous world positions $p, t$ (whether snapped or non-snapped, central or non-central) and any grid with $\text{MinTraversalCost} > 0$:
+   The quantity $C_{\text{lower}}(p, t) = \text{MinTraversalCost} \cdot d_{2D}(p, t)$ is a mathematically proven, valid lower bound on $\text{pathCostWorld}$.
 
 ### 3.2 Monotonic Scoring Upper Bound
 
 1. **Travel Time Lower Bound & Line Cost Per Meter**:
    $$v_{\text{eff}} = \begin{cases} \text{player.Speed}, & \text{if } \text{float.IsFinite(player.Speed)} \text{ and } \text{player.Speed} > 0 \\ \text{config.DefaultSpeed}, & \text{otherwise} \end{cases}$$
-   - `RankCandidates` accepts parameter `float lineCostPerMeter = 1.0f` ($= \text{grid.MinTraversalCost}$).
+   - `RankCandidates` accepts parameter `float lineCostPerMeter`. The `RouteCoordinator` **MUST** pass `lineCostPerMeter = grid.MinTraversalCost`.
    - For candidates **NOT** in the `verifiedPathCosts` dictionary:
-     $$T_{\text{sec, min}} = \frac{C_{\text{lower}}(p, t)}{v_{\text{eff}}} = \frac{\text{lineCostPerMeter} \cdot d_{2D}(p, t)}{v_{\text{eff}}}$$
-     `PathCostWorldUnits` $= \text{lineCostPerMeter} \cdot d_{2D}(p, t)$, and `IsPathVerified = false` (upper-bound stage).
+     $$T_{\text{sec, min}} = \frac{C_{\text{lower}}(p, t)}{v_{\text{eff}}} = \frac{\text{grid.MinTraversalCost} \cdot d_{2D}(p, t)}{v_{\text{eff}}}$$
+     `PathCostWorldUnits` $= \text{grid.MinTraversalCost} \cdot d_{2D}(p, t)$, and `IsPathVerified = false` (upper-bound stage).
    - For candidates **IN** the `verifiedPathCosts` dictionary:
      $$T_{\text{sec, path}} = \frac{\text{pathCostWorld}}{v_{\text{eff}}}$$
      `PathCostWorldUnits` $= \text{pathCostWorld}$, and `IsPathVerified = true`.
@@ -437,14 +458,16 @@ Let the start cell be $c_{\text{start}} = \text{WorldToGrid}(p)$ and goal cell b
 3. **Total Score Upper Bound**:
    Because all weights $w_v, w_t, w_r, w_h \ge 0$,
    $$\text{Score}_{\text{upperBound, raw}} \ge \text{Score}_{\text{pathVerified, raw}}$$
-   Rounding using `Math.Round(score, 6, MidpointRounding.AwayFromZero)` preserves monotonicity:
-   $$\text{Score}_{\text{upperBound}} \ge \text{Score}_{\text{pathVerified}}$$
+   Computing integer micro-scores via `ScoreMicros = (long)Math.Floor(raw * 1e6 + 0.5)` preserves monotonicity:
+   $$\text{ScoreMicros}_{\text{upperBound}} \ge \text{ScoreMicros}_{\text{pathVerified}}$$
 
 ### 3.3 Coherent Score Definition, Rounding & Pruning Tie Rule
 
-1. **Single Coherent Score Definition**:
-   All sorting, ranking, best-candidate tracking, commit radius overrides, and pruning decisions evaluate the **rounded score** ($\text{Math.Round}(..., 6)$) in `double` precision.
-2. **Slack-Adjusted Pruning Invariant (`UpperBoundSlack = 1e-6`)**:
+1. **Single Coherent Score Definition & ScoreMicros**:
+   `ScoreMicros = (long)Math.Floor(raw * 1e6 + 0.5)` is computed directly from the RAW double score. `Score = ScoreMicros / 1e6`. All sorting, ranking, best-candidate tracking, tie-breaking, commit radius overrides, and pruning decisions evaluate `ScoreMicros` exclusively.
+2. **Determinism Statement**:
+   The determinism contract is explicitly guaranteed for **"same build, same runtime, same inputs"**. Integer micro-scores provide exact integer comparisons within one build and prevent floating-point representation ambiguity; they do not claim cross-runtime bit identity across different architectures without fixed-point arithmetic.
+3. **Slack-Adjusted Pruning Invariant (`UpperBoundSlack = 1e-6` / `UpperBoundSlackMicros = 2L`)**:
    A candidate $C$ with straight-line upper bound $\text{Score}_{\text{upperBound}}(C)$ can be safely pruned against the currently verified best candidate $B$ (with score $\text{Score}_{\text{verified}}(B)$) **if and only if**:
    $$\text{Score}_{\text{upperBound}}(C) + \text{UpperBoundSlack} < \text{Score}_{\text{verified}}(B)$$
    $$\textbf{OR}$$
@@ -454,17 +477,49 @@ Let the start cell be $c_{\text{start}} = \text{WorldToGrid}(p)$ and goal cell b
 ### 3.4 CommitRadius Semantics & Replacement Threshold
 
 1. **Stability Policy**:
-   `CommitRadius` is explicitly a **spatial anti-jitter and path-stability policy**, not a guarantee of global score optimality.
-2. **Retention vs Replacement Policy**:
-   When `currentTargetId` is set, available, reachable, and within $d_{2D} \le \text{CommitRadius}$:
-   - **Default Retention**: The current target is retained to prevent oscillation near collection.
-   - **Effective Switch Threshold**: Because the current target receives the hysteresis bonus ($w_h \cdot 1.0 = 0.10$ with defaults) while challenger $C$ does not, challenger $C$ must beat current target's base evaluation by an effective switch threshold inside `CommitRadius`:
-     $$\text{EffectiveSwitchThreshold} = \text{CommitOverrideMargin} + \text{HysteresisBonus} \quad (0.30 + 0.10 = 0.40 \text{ with defaults})$$
-     In terms of evaluated total scores:
-     $$\text{Score}_{\text{verified}}(C) \ge \text{Score}_{\text{verified}}(\text{Current}) + \text{config.CommitOverrideMargin}$$
-   - **Challenger Search Requirement**: Evaluating challengers is required unless `config.CommitOverrideMargin == float.PositiveInfinity`. If `CommitOverrideMargin` is $+\infty$, the current target is retained unconditionally after verifying reachability with a single search.
-   - **Validation**: `CommitOverrideMargin` must be $\ge 0$ (rejecting `NaN`, negative values, and $-\infty$); $+\infty$ is permitted exclusively for `CommitOverrideMargin` to denote unconditional retention.
-   - If the current target is unreachable, invalid, or collected, commitment is voided and normal branch-and-bound applies immediately.
+   `CommitRadius` is explicitly a **spatial anti-jitter and path-stability policy**, not a guarantee of global score optimality. When the player enters the commit radius of their current target, target switching is suppressed unless an exceptional challenger emerges or the current target is compromised.
+
+2. **Single Unambiguous Replacement Condition**:
+   When `currentTargetId` is set, available in the repository, within continuous 2D distance $d_{2D}(p, \text{Current.Position}) \le \text{CommitRadius}$, and verified reachable (`PathStatus.Success`):
+   A path-verified challenger $C$ overrides / replaces the current target if and only if:
+   $$\text{Score}_{\text{verified}}(C) \ge \text{Score}_{\text{verified}}(\text{Current}) + \text{config.CommitOverrideMargin}$$
+
+3. **Hysteresis Accounting (Strict Single-Count Guarantee)**:
+   - For the current target, $\text{Score}_{\text{verified}}(\text{Current})$ is evaluated with `currentTargetId` matching its ID, so it includes the hysteresis bonus:
+     $$\text{Score}_{\text{verified}}(\text{Current}) = \text{BaseScore}(\text{Current}) + w_h \cdot 1.0$$
+   - For challenger $C$, $\text{Score}_{\text{verified}}(C)$ has $s_{\text{hyst}} = 0$, so $\text{Score}_{\text{verified}}(C) = \text{BaseScore}(C)$.
+   - In terms of intrinsic base scores (scores without hysteresis):
+     $$\text{BaseScore}(C) \ge \text{BaseScore}(\text{Current}) + \text{HysteresisBonus} + \text{config.CommitOverrideMargin}$$
+   - Comparing final evaluated scores ($\text{Score}_{\text{verified}}(C) \ge \text{Score}_{\text{verified}}(\text{Current}) + \text{CommitOverrideMargin}$) guarantees that the hysteresis bonus is **counted exactly once**. Implementations must never add hysteresis a second time.
+
+4. **Edge Behaviors and Boundary Rules**:
+   - **Zero Margin (`CommitOverrideMargin == 0.0f`)**:
+     Condition reduces to $\text{Score}_{\text{verified}}(C) \ge \text{Score}_{\text{verified}}(\text{Current})$. Challenger replaces Current if it overcomes Current's hysteresis bonus.
+   - **Equal Scores / Exact Boundary (`Score(C) == Score(Current) + Margin`)**:
+     Evaluated with strict $\ge$. If challenger's verified score matches the threshold exactly, replacement triggers.
+   - **Ordinal ID Ties**:
+     Current target is the incumbent. Challenger only replaces Current if $\text{Score}_{\text{verified}}(C) \ge \text{Score}_{\text{verified}}(\text{Current}) + \text{Margin}$. If `Margin > 0` and $\text{Score}_{\text{verified}}(C) < \text{Score}_{\text{verified}}(\text{Current}) + \text{Margin}$, no tie-breaking occurs; Current is retained regardless of whether $C$'s ID is lexicographically smaller than Current's ID.
+     If multiple challengers exceed the threshold, ties between challengers are broken by standard ranking rules: higher verified score, then lexicographically smaller ID (`StringComparer.Ordinal.Compare(C1.Id, C2.Id) < 0`).
+   - **Positive-Infinity Margin (`CommitOverrideMargin == float.PositiveInfinity`)**:
+     $\text{Score}_{\text{verified}}(\text{Current}) + \infty = \infty$. Since all scores $\le 1.0$, no finite challenger can ever satisfy the condition. Current target is retained unconditionally after verifying reachability with a single search.
+   - **Reachability Verification Requirement**:
+     The commit-radius fast path **MUST** path-verify the current target first via `_pathfinder.FindPath(player.Position, currentToken.Position)`. If the path search returns `Unreachable`, `InvalidGoal`, or `SearchBudgetExceeded`, commitment is immediately voided. Current target is **not** retained, its status is recorded in diagnostics, and the coordinator falls back to standard candidate ranking and branch-and-bound.
+
+5. **Concrete Numeric Examples**:
+   - *Example A (Default config: $w_h = 0.10, \text{Margin} = 0.30$)*:
+     Current target base score $= 0.450000$.
+     $\text{Score}_{\text{verified}}(\text{Current}) = 0.450000 + 0.100000 = 0.550000$.
+     Override threshold $= 0.550000 + 0.300000 = 0.850000$.
+     - Challenger X with base score $0.849999$: $0.849999 < 0.850000 \implies$ Current is retained.
+     - Challenger Y with base score $0.850000$: $0.850000 \ge 0.850000 \implies$ Challenger Y replaces Current.
+     - Challenger Z with base score $0.890000$: $0.890000 \ge 0.850000 \implies$ Challenger Z replaces Current.
+   - *Example B (Zero margin: $\text{Margin} = 0.00$)*:
+     Current target evaluated score $= 0.550000$. Threshold $= 0.550000$.
+     - Challenger X with score $0.549999$: $0.549999 < 0.550000 \implies$ Current is retained.
+     - Challenger Y with score $0.550000$: $0.550000 \ge 0.550000 \implies$ Challenger Y replaces Current.
+   - *Example C (Positive infinity margin)*:
+     Current target evaluated score $= 0.550000$. Threshold $= +\infty$.
+     Current verified reachable in 1 search $\implies$ Current retained immediately (`OptimalFound`, 1 search). No challengers searched.
 
 ---
 
@@ -605,7 +660,7 @@ public TargetDecision Coordinate(
     string? currentTargetId)
 {
     // Step 1: Validate player coordinates
-    if (!float.IsFinite(player.Position.X) || !float.IsFinite(player.Position.Z))
+    if (!float.IsFinite(player.Position.X) || !float.IsFinite(player.Position.Y) || !float.IsFinite(player.Position.Z))
         return TargetDecision.None(CoordinationTerminationReason.NoValidCandidates, 0, Array.Empty<string>(), EmptyDiag);
 
     // Step 2: Resolve Start Cell & Snapping
@@ -620,93 +675,132 @@ public TargetDecision Coordinate(
         snapped = true;
     }
 
-    // Step 3: Fetch Snapshot and Filter
+    // Step 3: Fetch Snapshot, Filter Valid Candidates & Validate Goal Cells
     var rawTokens = _tokenRepo.GetAvailable();
-    var candidates = FilterValidCandidates(rawTokens);
+    var skipped = new List<string>();
+    var diagnostics = new Dictionary<string, PathStatus>();
+    var candidates = new List<TokenLocation>();
+    var seenIds = new HashSet<string>(StringComparer.Ordinal);
+
+    for (int i = 0; i < rawTokens.Count; i++)
+    {
+        var t = rawTokens[i];
+        if (t == null || t.IsCollected) continue;
+        if (!float.IsFinite(t.Position.X) || !float.IsFinite(t.Position.Y) || !float.IsFinite(t.Position.Z)) continue;
+        if (string.IsNullOrEmpty(t.Id) || !seenIds.Add(t.Id)) continue;
+
+        var goalGrid = _grid.WorldToGrid(t.Position);
+        if (!_grid.IsInBounds(goalGrid) || !_grid.IsWalkable(goalGrid))
+        {
+            diagnostics[t.Id] = PathStatus.InvalidGoal;
+            skipped.Add(t.Id);
+            continue;
+        }
+
+        candidates.Add(t);
+    }
+
     if (candidates.Count == 0)
-        return TargetDecision.None(CoordinationTerminationReason.NoValidCandidates, 0, Array.Empty<string>(), EmptyDiag, snapped);
+        return TargetDecision.None(CoordinationTerminationReason.NoValidCandidates, 0, skipped, diagnostics, snapped);
+
+    int searchesRun = 0;
+    int maxExpansions = _grid.GridWidth * _grid.GridHeight;
+    TargetEvaluationResult? bestEval = null;
+    PathResult? bestPath = null;
+    TokenLocation? bestToken = null;
+    bool isCurrentTargetRetainedInsideCommit = false;
 
     // Step 4: Evaluate Commit Radius Stability
+    TokenLocation? currentToken = null;
     if (!string.IsNullOrEmpty(currentTargetId))
     {
-        var currentToken = candidates.FirstOrDefault(c => c.Id == currentTargetId);
+        currentToken = candidates.FirstOrDefault(c => c.Id == currentTargetId);
         if (currentToken != null)
         {
             float dist = Vec3.Distance2D(player.Position, currentToken.Position);
             if (dist <= config.CommitRadius)
             {
-                var directPath = _pathfinder.FindPath(player.Position, currentToken.Position);
+                searchesRun++;
+                var directPath = _pathfinder.FindPath(player.Position, currentToken.Position, maxExpansions);
+                diagnostics[currentToken.Id] = directPath.Status;
+
                 if (directPath.Status == PathStatus.Success)
                 {
                     float pathCostWorld = ComputeWorldPathCost(player.Position, currentToken.Position, directPath.GridCost, snapped, playerGrid, _grid.WorldToGrid(currentToken.Position));
                     var currentEval = _ranker.RankCandidates(
                         new[] { currentToken }, player, config, currentTargetId,
-                        new Dictionary<string, float> { [currentToken.Id] = pathCostWorld })[0];
+                        new Dictionary<string, float> { [currentToken.Id] = pathCostWorld },
+                        lineCostPerMeter: _grid.MinTraversalCost)[0];
+
+                    bestToken = currentToken;
+                    bestPath = directPath;
+                    bestEval = currentEval;
+                    isCurrentTargetRetainedInsideCommit = true;
 
                     // If CommitOverrideMargin is +Infinity, retain unconditionally after successful reachability
                     if (float.IsPositiveInfinity(config.CommitOverrideMargin))
                     {
                         return new TargetDecision(currentToken, directPath, currentEval,
-                            CoordinationTerminationReason.OptimalFound, 1, Array.Empty<string>(), EmptyDiag, snapped);
+                            CoordinationTerminationReason.OptimalFound, searchesRun, skipped, diagnostics, snapped);
                     }
-
-                    // Check if an exceptional challenger overrides inside commit radius
-                    var bestChallenger = FindOverrideChallenger(candidates, player, config, currentTargetId, currentEval.Score);
-                    if (bestChallenger == null)
-                    {
-                        return new TargetDecision(currentToken, directPath, currentEval,
-                            CoordinationTerminationReason.OptimalFound, 1, Array.Empty<string>(), EmptyDiag, snapped);
-                    }
+                }
+                else
+                {
+                    skipped.Add(currentToken.Id);
                 }
             }
         }
     }
 
     // Step 5: Straight-Line Upper Bound Evaluation
-    var upperBounds = _ranker.RankCandidates(candidates, player, config, currentTargetId, verifiedPathCosts: null);
+    var upperBounds = _ranker.RankCandidates(
+        candidates, player, config, currentTargetId,
+        verifiedPathCosts: null,
+        lineCostPerMeter: _grid.MinTraversalCost);
+
     var sortedCandidates = upperBounds.OrderByDescending(u => u.Score)
                                       .ThenBy(u => u.Token.Id, StringComparer.Ordinal)
                                       .ToList();
 
     // Step 6: Branch-and-Bound Evaluation Loop
-    TargetEvaluationResult? bestEval = null;
-    PathResult? bestPath = null;
-    TokenLocation? bestToken = null;
-    int searchesRun = 0;
     bool searchBudgetExceededOccurred = false;
-    var skipped = new List<string>();
-    var diagnostics = new Dictionary<string, PathStatus>();
+    bool stoppedByPruning = false;
 
     for (int i = 0; i < sortedCandidates.Count; i++)
     {
         var candidateEval = sortedCandidates[i];
 
+        // Skip if already evaluated during commit-radius check
+        if (bestToken != null && candidateEval.Token.Id == bestToken.Id)
+            continue;
+
+        // Effective threshold to beat
+        double effectiveThreshold = isCurrentTargetRetainedInsideCommit
+            ? bestEval!.Score + config.CommitOverrideMargin
+            : (bestEval != null ? bestEval.Score : double.NegativeInfinity);
+
         // Rigorous Slack-Adjusted Pruning Rule (UpperBoundSlack = 1e-6)
         if (bestEval != null)
         {
             double adjustedUpper = candidateEval.Score + RankingConfig.UpperBoundSlack;
-            if (adjustedUpper < bestEval.Score ||
-               (Math.Abs(adjustedUpper - bestEval.Score) <= 1e-9 && StringComparer.Ordinal.Compare(candidateEval.Token.Id, bestToken!.Id) > 0))
+            if (adjustedUpper < effectiveThreshold ||
+               (Math.Abs(adjustedUpper - effectiveThreshold) <= 1e-9 && isCurrentTargetRetainedInsideCommit) ||
+               (Math.Abs(adjustedUpper - effectiveThreshold) <= 1e-9 && !isCurrentTargetRetainedInsideCommit && StringComparer.Ordinal.Compare(candidateEval.Token.Id, bestToken!.Id) > 0))
             {
-                var termination = searchBudgetExceededOccurred 
-                    ? CoordinationTerminationReason.SearchBudgetReached 
-                    : CoordinationTerminationReason.OptimalFound;
-
-                return new TargetDecision(bestToken, bestPath, bestEval, termination, searchesRun, skipped, diagnostics, snapped);
+                stoppedByPruning = true;
+                break;
             }
         }
 
         // Search Count Budget Check
         if (searchesRun >= config.MaxPathSearches)
         {
-            return new TargetDecision(bestToken, bestPath, bestEval,
-                bestEval != null ? CoordinationTerminationReason.SearchBudgetReached : CoordinationTerminationReason.NoValidCandidates,
-                searchesRun, skipped, diagnostics, snapped);
+            break;
         }
 
         // Execute Path Search
         searchesRun++;
-        var pathResult = _pathfinder.FindPath(player.Position, candidateEval.Token.Position);
+        var pathResult = _pathfinder.FindPath(player.Position, candidateEval.Token.Position, maxExpansions);
         diagnostics[candidateEval.Token.Id] = pathResult.Status;
 
         if (pathResult.Status == PathStatus.Success)
@@ -714,32 +808,77 @@ public TargetDecision Coordinate(
             float verifiedWorldCost = ComputeWorldPathCost(player.Position, candidateEval.Token.Position, pathResult.GridCost, snapped, playerGrid, _grid.WorldToGrid(candidateEval.Token.Position));
             var verifiedEval = _ranker.RankCandidates(
                 new[] { candidateEval.Token }, player, config, currentTargetId,
-                new Dictionary<string, float> { [candidateEval.Token.Id] = verifiedWorldCost })[0];
+                new Dictionary<string, float> { [candidateEval.Token.Id] = verifiedWorldCost },
+                lineCostPerMeter: _grid.MinTraversalCost)[0];
 
-            if (bestEval == null || verifiedEval.Score > bestEval.Score ||
-               (verifiedEval.Score == bestEval.Score && StringComparer.Ordinal.Compare(candidateEval.Token.Id, bestToken!.Id) < 0))
+            if (bestEval == null)
             {
                 bestEval = verifiedEval;
                 bestPath = pathResult;
                 bestToken = candidateEval.Token;
             }
+            else if (isCurrentTargetRetainedInsideCommit)
+            {
+                // Challenger must beat threshold to override
+                if (verifiedEval.Score >= effectiveThreshold)
+                {
+                    bestEval = verifiedEval;
+                    bestPath = pathResult;
+                    bestToken = candidateEval.Token;
+                    isCurrentTargetRetainedInsideCommit = false; // Dethroned!
+                }
+            }
+            else
+            {
+                if (verifiedEval.Score > bestEval.Score ||
+                   (verifiedEval.Score == bestEval.Score && StringComparer.Ordinal.Compare(candidateEval.Token.Id, bestToken!.Id) < 0))
+                {
+                    bestEval = verifiedEval;
+                    bestPath = pathResult;
+                    bestToken = candidateEval.Token;
+                }
+            }
         }
         else
         {
             if (pathResult.Status == PathStatus.SearchBudgetExceeded)
-                searchBudgetExceededOccurred = true;
+            {
+                double adjustedUpper = candidateEval.Score + RankingConfig.UpperBoundSlack;
+                double currentBest = bestEval != null ? bestEval.Score : double.NegativeInfinity;
+                if (adjustedUpper >= currentBest)
+                {
+                    searchBudgetExceededOccurred = true;
+                }
+            }
 
             skipped.Add(candidateEval.Token.Id);
         }
     }
 
-    var finalReason = bestToken != null
-        ? (searchBudgetExceededOccurred ? CoordinationTerminationReason.SearchBudgetReached : CoordinationTerminationReason.AllCandidatesEvaluated)
-        : CoordinationTerminationReason.NoValidCandidates;
+    if (bestToken == null)
+    {
+        return TargetDecision.None(CoordinationTerminationReason.NoValidCandidates, searchesRun, skipped, diagnostics, snapped);
+    }
 
-    return bestToken != null
-        ? new TargetDecision(bestToken, bestPath, bestEval, finalReason, searchesRun, skipped, diagnostics, snapped)
-        : TargetDecision.None(CoordinationTerminationReason.NoValidCandidates, searchesRun, skipped, diagnostics, snapped);
+    CoordinationTerminationReason finalReason;
+    if (stoppedByPruning)
+    {
+        finalReason = searchBudgetExceededOccurred
+            ? CoordinationTerminationReason.SearchBudgetReached
+            : CoordinationTerminationReason.OptimalFound;
+    }
+    else if (searchesRun >= config.MaxPathSearches && skipped.Count + (bestToken != null ? 1 : 0) < candidates.Count)
+    {
+        finalReason = CoordinationTerminationReason.SearchBudgetReached;
+    }
+    else
+    {
+        finalReason = searchBudgetExceededOccurred
+            ? CoordinationTerminationReason.SearchBudgetReached
+            : CoordinationTerminationReason.AllCandidatesEvaluated;
+    }
+
+    return new TargetDecision(bestToken, bestPath, bestEval, finalReason, searchesRun, skipped, diagnostics, snapped);
 }
 ```
 
@@ -776,23 +915,32 @@ public TargetDecision Coordinate(
 | **R-08** | Invalid Inputs | Candidate with NaN coordinates, NaN estimated value, negative value, or non-finite speed handled cleanly without throwing. |
 | **R-09** | Rounding Stability | Scores with tiny floating-point variance at $10^{-8}$ round to identical score at 6 decimal places. |
 | **R-10** | Three Presets Scenario | Test with Phase 1 standard presets (high-value far, cheap close, rare medium) verifying deterministic ranking order. |
+| **R-11** | Monotonicity Property | Assert score is non-increasing in `pathCostWorld`, non-decreasing in `EstimatedValue`, and non-decreasing in `Rarity` across 50 random candidates. |
+| **R-12** | Architecture & Source Scan | Reflection check AND source file text scan verifying no file under `Assistant.Core/Ranking` references `DisplayMode`, `IDisplayModeManager`, `ITokenRepository`, `INavGrid`, or `IPathfinder`. |
+| **R-13** | Config Validation | Thorough parameter bounds checking for `RankingConfig` constructor. |
+| **R-14** | Deduplication & Collected | Collected tokens skipped; duplicate candidate IDs keep first occurrence. |
 
 ### 6.3 Coordinator Tests (`Assistant.Tests.Coordination`)
 | Test ID | Category | Scenario & Assertion |
 | :--- | :--- | :--- |
-| **C-01** | Commit Radius Retain | Player within `CommitRadius` of current target: target retained even if a slightly better candidate exists. |
-| **C-02** | Commit Radius Override | Player within `CommitRadius`, but an exceptional candidate beats current target by $\ge \text{CommitOverrideMargin}$: target switches to challenger. |
-| **C-03** | Branch-and-Bound Pruning | Best path score beats remaining candidates' straight-line upper bounds: loop terminates early with `OptimalFound`. |
-| **C-04** | Pruning Tie-Breaker | Candidate with upper bound equal to best verified score is evaluated if its ID is lexicographically smaller, but pruned if its ID is greater. |
-| **C-05** | Equivalence Property | On seeded random maps with `MaxPathSearches >= candidateCount`: branch-and-bound decision is 100% identical to exhaustive full-evaluation decision. |
-| **C-06** | Budget Exhaustion | Top 8 candidates all require heavy path searches: search stops at 8 with `SearchBudgetReached`. |
-| **C-07** | Candidate Budget Fallback | Top candidate search exhausts expansion budget: coordinator logs `SearchBudgetExceeded` in diagnostics and falls back to 2nd candidate; termination is `SearchBudgetReached`. |
-| **C-08** | Player Snapped Walkable | Player starts on unwalkable cell with walkable cell in Ring 1: snaps start position, executes coordination, and reports `PlayerSnappedToWalkable == true`. |
-| **C-09** | Player On Blocked Cell | Player surrounded by radius 2 obstacles: returns `TargetDecision.None` with `PlayerOnBlockedCell` without evaluating candidates. |
-| **C-10** | Multi-Run Determinism | Run 100 repeated coordination passes with identical input state; assert identical decisions, paths, and diagnostics. |
-| **C-11** | Scoring Upper Bound Property | Seeded property test: for 500 random player/token positions (same cell, adjacent cells, near cell borders, snapped start) assert straight-line upper bound score $+ \text{UpperBoundSlack} \ge \text{Score}_{\text{verified}}$. |
-| **C-12** | Termination Reasons Coverage | Dedicated isolated tests asserting exact condition + precedence for each termination reason (`OptimalFound`, `AllCandidatesEvaluated`, `SearchBudgetReached`, `NoValidCandidates`, `PlayerOnBlockedCell`). |
-| **C-13** | Commit Radius Override Margin Boundary | Boundary test at exactly the override threshold: challenger with raw score advantage matching `CommitOverrideMargin + HysteresisBonus` exactly triggers/does not trigger according to strict `>=` rule. |
+| **C-01** | Commit Radius Retain | Player within `CommitRadius` of current target: target retained even if a slightly better challenger exists. |
+| **C-02** | Commit Radius Override Boundary | Challenger beats threshold exactly at, just below, and just above `Score(Current) + CommitOverrideMargin`; assert strict `>=` trigger. |
+| **C-03** | Branch-and-Bound Early Pruning | Best path score beats remaining candidates' straight-line upper bounds: loop terminates early with `OptimalFound` and exact `PathSearchesExecuted`. |
+| **C-04** | Pruning Tie Rule Both Directions | Equal upper bound: lower ID evaluated, higher ID pruned. |
+| **C-05** | MaxPathSearches Budget Cap | Search stops at `MaxPathSearches` limit; termination is `SearchBudgetReached` only when an unpruned, unevaluated candidate remains, else `OptimalFound`. |
+| **C-06** | Unreachable Fallback & Diagnostics | Top candidate is unreachable: logged in diagnostics, falls back to 2nd candidate; termination reflects remaining evaluations. |
+| **C-07** | Candidate Budget Fallback | Top candidate exhausts expansions (`SearchBudgetExceeded`): logged in diagnostics, falls back to 2nd candidate; termination is `SearchBudgetReached`. |
+| **C-08** | All Candidates Fail | All candidates fail pathfinding (`Unreachable` or `InvalidGoal`): returns `TargetDecision.None` with `NoValidCandidates` and complete diagnostics dictionary. |
+| **C-09** | Player Snapped Walkable | Player starts on unwalkable cell with walkable neighbor in Ring 1: snaps start position, executes coordination, and reports `PlayerSnappedToWalkable == true`. |
+| **C-10** | Player On Blocked Cell | Player surrounded by radius 2 obstacles: returns `TargetDecision.None` with `PlayerOnBlockedCell` without evaluating candidates. |
+| **C-11** | Termination Reasons Coverage | Dedicated test suite covering each `CoordinationTerminationReason` under its exact trigger condition and precedence order. |
+| **C-12** | Reachable-but-Long-Detour | Token behind a long wall loses to a farther token with a clear path (the core behavioral goal of the entire system). |
+| **C-13** | Equivalence Property | On seeded random maps with `MaxPathSearches >= candidateCount`: branch-and-bound decision is 100% identical to exhaustive evaluation. |
+| **C-14** | Geometry & Lower Bound Property | For random player/token positions (same cell, adjacent cells, near cell borders, snapped start) with REAL A*: assert `MinTraversalCost * Distance2D(p, t) <= pathCostWorld + 1e-6` and `lineScore + 1e-6 >= verifiedScore`. |
+| **C-15** | Multi-Run Determinism | Run 100 repeated coordination passes with identical input state; assert identical decisions, paths, and diagnostics. |
+| **C-16** | Phase 1 Preset Navigation | Phase 1 presets on clear grid (expected winner Charlie), and with wall making Charlie unreachable $\rightarrow$ Bravo selected. |
+| **C-17** | Invalid Goal Validation | Token on non-walkable or out-of-bounds goal cell is skipped with `DiagnosticStatusByCandidateId[id] = PathStatus.InvalidGoal`. |
+| **C-18** | Empty Repository & Zero Candidates | Empty repository returns `TargetDecision.None` with `NoValidCandidates`. |
 
 ---
 

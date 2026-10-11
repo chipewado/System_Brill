@@ -42,22 +42,22 @@ namespace Assistant.Core.Ranking
 
         public TargetEvaluationResult(
             TokenLocation token,
-            double score,
+            double rawScore,
             double normalizedValue,
             double normalizedTime,
             double normalizedRarity,
-            double hysteresisBonus,
+            double normalizedHysteresis,
             float estimatedTravelSeconds,
             float pathCostWorldUnits,
             bool isPathVerified)
             : this(
                 token,
-                score,
-                (long)Math.Round(score * 1_000_000.0, MidpointRounding.AwayFromZero),
+                ((long)Math.Floor(rawScore * 1_000_000.0 + 0.5)) / 1_000_000.0,
+                (long)Math.Floor(rawScore * 1_000_000.0 + 0.5),
                 normalizedValue,
                 normalizedTime,
                 normalizedRarity,
-                hysteresisBonus,
+                normalizedHysteresis,
                 estimatedTravelSeconds,
                 pathCostWorldUnits,
                 isPathVerified)

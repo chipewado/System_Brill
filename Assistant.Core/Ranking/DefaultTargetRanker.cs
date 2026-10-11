@@ -122,8 +122,8 @@ namespace Assistant.Core.Ranking
                             + (double)config.WeightRarity * sRar
                             + (double)config.WeightHysteresis * sHyst;
 
-            double score = Math.Round(rawScore, 6, MidpointRounding.AwayFromZero);
-            long scoreMicros = (long)Math.Round(score * 1_000_000.0, MidpointRounding.AwayFromZero);
+            long scoreMicros = (long)Math.Floor(rawScore * 1_000_000.0 + 0.5);
+            double score = scoreMicros / 1_000_000.0;
 
             return new TargetEvaluationResult(
                 candidate,

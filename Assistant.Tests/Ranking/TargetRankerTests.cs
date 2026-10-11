@@ -701,11 +701,14 @@ namespace Assistant.Tests.Ranking
             var eval = _ranker.Evaluate(t1, player, _config, null);
             Assert.That(eval, Is.Not.Null);
 
-            // ScoreMicros must exactly match Round(Score * 1e6)
-            long expectedMicros = (long)Math.Round(eval!.Score * 1_000_000.0, MidpointRounding.AwayFromZero);
-            Assert.That(eval.ScoreMicros, Is.EqualTo(expectedMicros));
+            // ScoreMicros must be computed from raw double score: (long)Math.Floor(raw * 1e6 + 0.5)
+            // Raw score: 0.40 * (100 / 250) + 0.35 * (1 - (10/5)/120) + 0 + 0 = 0.40 * 0.4 + 0.35 * (1 - 2/120)
+            double raw = 0.40 * (100.0 / 250.0) + 0.35 * (1.0 - (2.0 / 120.0));
+            long expectedMicros = (long)Math.Floor(raw * 1_000_000.0 + 0.5);
+            double expectedScore = expectedMicros / 1_000_000.0;
 
-            // Backward compatibility properties
+            Assert.That(eval!.ScoreMicros, Is.EqualTo(expectedMicros));
+            Assert.That(eval.Score, Is.EqualTo(expectedScore));
             Assert.That(eval.NormalizedHysteresis, Is.EqualTo(0.0));
         }
 
