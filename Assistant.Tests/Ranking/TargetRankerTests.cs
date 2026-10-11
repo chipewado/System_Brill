@@ -174,8 +174,8 @@ namespace Assistant.Tests.Ranking
             var results = _ranker.RankCandidates(new[] { tokenA, tokenB }, player, _config, currentTargetId: "token_collected");
 
             Assert.That(results.Count, Is.EqualTo(2));
-            Assert.That(results[0].HysteresisBonus, Is.EqualTo(0.0));
-            Assert.That(results[1].HysteresisBonus, Is.EqualTo(0.0));
+            Assert.That(results[0].NormalizedHysteresis, Is.EqualTo(0.0));
+            Assert.That(results[1].NormalizedHysteresis, Is.EqualTo(0.0));
             Assert.That(results[0].Token.Id, Is.EqualTo("token_a"));
             // Score for token_a without hysteresis: 0.40 * (100/250) + 0.35 * 1.0 = 0.16 + 0.35 = 0.510000
             Assert.That(results[0].Score, Is.EqualTo(0.510000).Within(1e-6));
@@ -520,6 +520,287 @@ namespace Assistant.Tests.Ranking
             Assert.That(dupResult, Is.Not.Null);
             Assert.That(dupResult!.Token.EstimatedValue, Is.EqualTo(100f), "First occurrence of duplicate ID must be preserved");
             Assert.That(dupResult.Token.Rarity, Is.EqualTo(TokenRarity.Common));
+        }
+
+        [Test]
+        public void R15_VerifiedCost_PositiveInfinity_ExcludesCandidateFromRankCandidatesAndEvaluate()
+        {
+            var player = new PlayerState { Position = Vec3.Zero, Speed = 5f };
+            var unreachable = new TokenLocation
+            {
+                Id = "unreachable",
+                Position = new Vec3(500f, 0f, 500f),
+                Rarity = TokenRarity.Legendary,
+                EstimatedValue = 250f
+            };
+            var reachable = new TokenLocation
+            {
+                Id = "reachable",
+                Position = new Vec3(10f, 0f, 10f),
+                Rarity = TokenRarity.Common,
+                EstimatedValue = 10f
+            };
+
+            // 1. Evaluate returns null for +Infinity verified cost
+            var evalResult = _ranker.Evaluate(unreachable, player, _config, null, verifiedPathCost: float.PositiveInfinity);
+            Assert.That(evalResult, Is.Null, "Evaluate must return null for an unreachable candidate with +Infinity cost");
+
+            // 2. RankCandidates omits candidate with +Infinity cost entirely
+            var verified = new Dictionary<string, float>
+            {
+                ["unreachable"] = float.PositiveInfinity,
+                ["reachable"] = 15f
+            };
+
+            var results = _ranker.RankCandidates(new[] { unreachable, reachable }, player, _config, null, verified);
+
+            Assert.That(results.Count, Is.EqualTo(1));
+            Assert.That(results[0].Token.Id, Is.EqualTo("reachable"), "Unreachable candidate must never be returned in ranking list");
+            Assert.That(results[0].IsPathVerified, Is.True);
+        }
+
+        [Test]
+        public void R16_VerifiedCost_NegativeOrNaN_ThrowsArgumentOutOfRangeException()
+        {
+            var player = new PlayerState { Position = Vec3.Zero, Speed = 5f };
+            var token = new TokenLocation { Id = "t1", Position = new Vec3(10f, 0f, 0f), Rarity = TokenRarity.Common, EstimatedValue = 50f };
+
+            // In Evaluate:
+            Assert.Throws<ArgumentOutOfRangeException>(() =>
+                _ranker.Evaluate(token, player, _config, null, verifiedPathCost: float.NaN));
+            Assert.Throws<ArgumentOutOfRangeException>(() =>
+                _ranker.Evaluate(token, player, _config, null, verifiedPathCost: -1.0f));
+            Assert.Throws<ArgumentOutOfRangeException>(() =>
+                _ranker.Evaluate(token, player, _config, null, verifiedPathCost: float.NegativeInfinity));
+
+            // In RankCandidates:
+            Assert.Throws<ArgumentOutOfRangeException>(() =>
+                _ranker.RankCandidates(new[] { token }, player, _config, null, new Dictionary<string, float> { ["t1"] = float.NaN }));
+            Assert.Throws<ArgumentOutOfRangeException>(() =>
+                _ranker.RankCandidates(new[] { token }, player, _config, null, new Dictionary<string, float> { ["t1"] = -5.0f }));
+        }
+
+        [Test]
+        public void R17_VerifiedCost_ZeroCostValidWhenEndpointsCoincide()
+        {
+            // Player and token genuinely coincide at origin
+            var player = new PlayerState { Position = Vec3.Zero, Speed = 5f };
+            var token = new TokenLocation { Id = "coincide", Position = Vec3.Zero, Rarity = TokenRarity.Common, EstimatedValue = 100f };
+
+            var eval = _ranker.Evaluate(token, player, _config, null, verifiedPathCost: 0f);
+
+            Assert.That(eval, Is.Not.Null);
+            Assert.That(eval!.IsPathVerified, Is.True);
+            Assert.That(eval.PathCostWorldUnits, Is.EqualTo(0f));
+            Assert.That(eval.EstimatedTravelSeconds, Is.EqualTo(0f));
+            Assert.That(eval.NormalizedTime, Is.EqualTo(1.0), "Zero travel time must give perfect normalized time score of 1.0");
+        }
+
+        [Test]
+        public void R18_VerifiedCost_BelowStraightLineViolatingContract_ThrowsArgumentException()
+        {
+            // Straight-line distance is 100m, lineCostPerMeter = 1.0 => minLineCost = 100m
+            var player = new PlayerState { Position = Vec3.Zero, Speed = 5f };
+            var token = new TokenLocation { Id = "t_cheat", Position = new Vec3(100f, 0f, 0f), Rarity = TokenRarity.Common, EstimatedValue = 50f };
+
+            // Passing 50m (violates lower bound contract by 50m > 1e-4) must throw ArgumentException
+            Assert.Throws<ArgumentException>(() =>
+                _ranker.Evaluate(token, player, _config, null, verifiedPathCost: 50.0f, lineCostPerMeter: 1.0f));
+
+            Assert.Throws<ArgumentException>(() =>
+                _ranker.RankCandidates(new[] { token }, player, _config, null, new Dictionary<string, float> { ["t_cheat"] = 50.0f }, lineCostPerMeter: 1.0f));
+        }
+
+        [Test]
+        public void R19_VerifiedCost_AtStraightLineEpsilonBoundary_ClampedSafely()
+        {
+            // Straight-line distance = 10.0m
+            var player = new PlayerState { Position = Vec3.Zero, Speed = 5f };
+            var token = new TokenLocation { Id = "t_eps", Position = new Vec3(10f, 0f, 0f), Rarity = TokenRarity.Common, EstimatedValue = 50f };
+
+            // Line evaluation (unverified)
+            var lineEval = _ranker.Evaluate(token, player, _config, null, verifiedPathCost: null, lineCostPerMeter: 1.0f);
+            Assert.That(lineEval, Is.Not.Null);
+
+            // Verified cost slightly below line cost within tolerance [minLineCost - 1e-4, minLineCost]
+            float slightUnderflow = 10.0f - 1e-5f;
+            var verifiedEval = _ranker.Evaluate(token, player, _config, null, verifiedPathCost: slightUnderflow, lineCostPerMeter: 1.0f);
+
+            Assert.That(verifiedEval, Is.Not.Null);
+            Assert.That(verifiedEval!.IsPathVerified, Is.True);
+            // Must be clamped to minLineCost (10.0m) to guarantee verified score <= upper bound score
+            Assert.That(verifiedEval.PathCostWorldUnits, Is.EqualTo(10.0f).Within(1e-5f));
+            Assert.That(verifiedEval.Score, Is.LessThanOrEqualTo(lineEval!.Score));
+        }
+
+        [Test]
+        public void R20_PlanarCoordinates_NonFiniteYIgnoredAndNonFiniteXZSkipped()
+        {
+            // Y is elevation in 2.5D planar navigation and is ignored
+            var playerWithInfY = new PlayerState { Position = new Vec3(0f, float.PositiveInfinity, 0f), Speed = 5f };
+            var tokenWithNanY = new TokenLocation { Id = "t_nan_y", Position = new Vec3(10f, float.NaN, 0f), Rarity = TokenRarity.Common, EstimatedValue = 50f };
+
+            var eval = _ranker.Evaluate(tokenWithNanY, playerWithInfY, _config, null);
+            Assert.That(eval, Is.Not.Null, "Candidate and Player with non-finite Y must be evaluated normally");
+
+            // But non-finite X or Z MUST be skipped/return null
+            var tokenWithNanX = new TokenLocation { Id = "t_nan_x", Position = new Vec3(float.NaN, 0f, 0f), Rarity = TokenRarity.Common, EstimatedValue = 50f };
+            var tokenWithInfZ = new TokenLocation { Id = "t_inf_z", Position = new Vec3(0f, 0f, float.NegativeInfinity), Rarity = TokenRarity.Common, EstimatedValue = 50f };
+
+            Assert.That(_ranker.Evaluate(tokenWithNanX, playerWithInfY, _config, null), Is.Null);
+            Assert.That(_ranker.Evaluate(tokenWithInfZ, playerWithInfY, _config, null), Is.Null);
+
+            var batchResults = _ranker.RankCandidates(new[] { tokenWithNanY, tokenWithNanX, tokenWithInfZ }, playerWithInfY, _config, null);
+            Assert.That(batchResults.Count, Is.EqualTo(1));
+            Assert.That(batchResults[0].Token.Id, Is.EqualTo("t_nan_y"));
+        }
+
+        [Test]
+        public void R21_Distance2D_LargeFiniteCoordinates_DoesNotOverflowToInfinity()
+        {
+            // Two finite coordinates whose difference squared exceeds float.MaxValue (3.402823e38)
+            // dx = 2e19 => dx*dx = 4e38 > float.MaxValue
+            var p1 = new Vec3(0f, 0f, 0f);
+            var p2 = new Vec3(2e19f, 0f, 0f);
+
+            float dist = Vec3.Distance2D(p1, p2);
+            Assert.That(float.IsFinite(dist), Is.True, $"Distance2D must not overflow to Infinity; got {dist}");
+            Assert.That(dist, Is.EqualTo(2e19f).Within(1e14f));
+
+            float dist3D = Vec3.Distance(p1, p2);
+            Assert.That(float.IsFinite(dist3D), Is.True, "3D Distance must not overflow to Infinity");
+        }
+
+        [Test]
+        public void R22_RankingConfig_WeightSumValidation_EnforcesRangeZeroToTenAndRejectsOverflow()
+        {
+            // 1. Weight sum overflow in float (2e38f + 2e38f) throws ArgumentOutOfRangeException
+            Assert.Throws<ArgumentOutOfRangeException>(() =>
+                new RankingConfig(weightValue: 2e38f, weightTime: 2e38f));
+
+            // 2. Weight sum exceeding 10.0 throws ArgumentOutOfRangeException
+            Assert.Throws<ArgumentOutOfRangeException>(() =>
+                new RankingConfig(weightValue: 6.0f, weightTime: 5.0f));
+
+            // 3. Default weights (sum 1.0) accepted
+            var defaultConfig = new RankingConfig();
+            double defaultSum = (double)defaultConfig.WeightValue + defaultConfig.WeightTime + defaultConfig.WeightRarity + defaultConfig.WeightHysteresis;
+            Assert.That(defaultSum, Is.EqualTo(1.0).Within(1e-6));
+
+            // 4. Weight sum of exactly 10.0 accepted
+            Assert.DoesNotThrow(() =>
+                new RankingConfig(weightValue: 4.0f, weightTime: 3.5f, weightRarity: 1.5f, weightHysteresis: 1.0f));
+        }
+
+        [Test]
+        public void R23_ScoreMicros_TracksScoreAndOrdersDeterministically()
+        {
+            var player = new PlayerState { Position = Vec3.Zero, Speed = 5f };
+            var t1 = new TokenLocation { Id = "t1", Position = new Vec3(10f, 0f, 0f), Rarity = TokenRarity.Common, EstimatedValue = 100f };
+
+            var eval = _ranker.Evaluate(t1, player, _config, null);
+            Assert.That(eval, Is.Not.Null);
+
+            // ScoreMicros must exactly match Round(Score * 1e6)
+            long expectedMicros = (long)Math.Round(eval!.Score * 1_000_000.0, MidpointRounding.AwayFromZero);
+            Assert.That(eval.ScoreMicros, Is.EqualTo(expectedMicros));
+
+            // Backward compatibility properties
+            Assert.That(eval.NormalizedHysteresis, Is.EqualTo(0.0));
+        }
+
+        [Test]
+        public void R24_Evaluate_ProducesIdenticalResultToRankCandidatesSingleElement()
+        {
+            var player = new PlayerState { Position = new Vec3(25f, 0f, 30f), Speed = 5.5f };
+            var token = new TokenLocation { Id = "token_target", Position = new Vec3(80f, 0f, 95f), Rarity = TokenRarity.Rare, EstimatedValue = 175f };
+
+            // 1. Unverified evaluation
+            var evalUnverified = _ranker.Evaluate(token, player, _config, currentTargetId: "token_target");
+            var rankUnverified = _ranker.RankCandidates(new[] { token }, player, _config, currentTargetId: "token_target")[0];
+
+            Assert.That(evalUnverified!.Score, Is.EqualTo(rankUnverified.Score));
+            Assert.That(evalUnverified.ScoreMicros, Is.EqualTo(rankUnverified.ScoreMicros));
+            Assert.That(evalUnverified.NormalizedValue, Is.EqualTo(rankUnverified.NormalizedValue));
+            Assert.That(evalUnverified.NormalizedTime, Is.EqualTo(rankUnverified.NormalizedTime));
+            Assert.That(evalUnverified.NormalizedRarity, Is.EqualTo(rankUnverified.NormalizedRarity));
+            Assert.That(evalUnverified.NormalizedHysteresis, Is.EqualTo(rankUnverified.NormalizedHysteresis));
+            Assert.That(evalUnverified.PathCostWorldUnits, Is.EqualTo(rankUnverified.PathCostWorldUnits));
+            Assert.That(evalUnverified.EstimatedTravelSeconds, Is.EqualTo(rankUnverified.EstimatedTravelSeconds));
+            Assert.That(evalUnverified.IsPathVerified, Is.EqualTo(rankUnverified.IsPathVerified));
+
+            // 2. Verified evaluation
+            float verifiedCost = 120.0f;
+            var evalVerified = _ranker.Evaluate(token, player, _config, currentTargetId: null, verifiedPathCost: verifiedCost);
+            var rankVerified = _ranker.RankCandidates(new[] { token }, player, _config, currentTargetId: null, new Dictionary<string, float> { [token.Id] = verifiedCost })[0];
+
+            Assert.That(evalVerified!.Score, Is.EqualTo(rankVerified.Score));
+            Assert.That(evalVerified.ScoreMicros, Is.EqualTo(rankVerified.ScoreMicros));
+            Assert.That(evalVerified.PathCostWorldUnits, Is.EqualTo(rankVerified.PathCostWorldUnits));
+            Assert.That(evalVerified.IsPathVerified, Is.True);
+        }
+
+        [Test]
+        public void R25_AllocationReport_MeasuresThreadAllocationsFor100And1000Candidates()
+        {
+            var player = new PlayerState { Position = Vec3.Zero, Speed = 5f };
+
+            // Warm up JIT
+            var warmupTokens = Enumerable.Range(0, 10).Select(i => new TokenLocation
+            {
+                Id = $"w_{i}",
+                Position = new Vec3(i * 5f, 0f, 0f),
+                Rarity = TokenRarity.Common,
+                EstimatedValue = 50f
+            }).ToList();
+            _ranker.RankCandidates(warmupTokens, player, _config, null);
+            _ranker.Evaluate(warmupTokens[0], player, _config, null);
+
+            // 1. Measure 100 Candidates with RankCandidates
+            var tokens100 = Enumerable.Range(0, 100).Select(i => new TokenLocation
+            {
+                Id = $"t_{i}",
+                Position = new Vec3(i * 2f, 0f, i * 2f),
+                Rarity = (TokenRarity)(i % 5),
+                EstimatedValue = (float)(i * 2.5)
+            }).ToList();
+
+            long bytesBefore100 = GC.GetAllocatedBytesForCurrentThread();
+            var results100 = _ranker.RankCandidates(tokens100, player, _config, null);
+            long bytesAfter100 = GC.GetAllocatedBytesForCurrentThread();
+            long allocated100 = bytesAfter100 - bytesBefore100;
+
+            Assert.That(results100.Count, Is.EqualTo(100));
+            TestContext.Out.WriteLine($"RankCandidates allocation for 100 candidates: {allocated100:N0} bytes (~{allocated100 / 1024.0:F1} KB)");
+
+            // 2. Measure 1000 Candidates with RankCandidates
+            var tokens1000 = Enumerable.Range(0, 1000).Select(i => new TokenLocation
+            {
+                Id = $"k_{i}",
+                Position = new Vec3(i * 1f, 0f, i * 1f),
+                Rarity = (TokenRarity)(i % 5),
+                EstimatedValue = (float)(i * 0.25)
+            }).ToList();
+
+            long bytesBefore1000 = GC.GetAllocatedBytesForCurrentThread();
+            var results1000 = _ranker.RankCandidates(tokens1000, player, _config, null);
+            long bytesAfter1000 = GC.GetAllocatedBytesForCurrentThread();
+            long allocated1000 = bytesAfter1000 - bytesBefore1000;
+
+            Assert.That(results1000.Count, Is.EqualTo(1000));
+            TestContext.Out.WriteLine($"RankCandidates allocation for 1000 candidates: {allocated1000:N0} bytes (~{allocated1000 / 1024.0:F1} KB)");
+
+            // 3. Measure single Evaluate (hot path in RouteCoordinator)
+            long bytesBeforeEval = GC.GetAllocatedBytesForCurrentThread();
+            var singleEval = _ranker.Evaluate(tokens100[0], player, _config, null);
+            long bytesAfterEval = GC.GetAllocatedBytesForCurrentThread();
+            long allocatedEval = bytesAfterEval - bytesBeforeEval;
+
+            Assert.That(singleEval, Is.Not.Null);
+            TestContext.Out.WriteLine($"Single Evaluate allocation: {allocatedEval} bytes (only 1 TargetEvaluationResult object, 0 wrapper collections)");
+
+            // Invariant: Single evaluate allocates <= 128 bytes (pure DTO instantiation, no arrays or hashsets)
+            Assert.That(allocatedEval, Is.LessThanOrEqualTo(128));
         }
     }
 }
